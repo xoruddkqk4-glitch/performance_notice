@@ -128,9 +128,13 @@ export default function Home() {
     });
   }, [isPresident]);
 
-  const persistAssessments = (next: Assessment[]) => {
-    setAssessments(next);
-    void setDoc(doc(firestore, "appState", "schedules"), { assessments: next, updatedAt: new Date().toISOString() });
+  const persistAssessments = async (next: Assessment[]) => {
+    try {
+      await setDoc(doc(firestore, "appState", "schedules"), { assessments: next, updatedAt: new Date().toISOString() });
+      setAssessments(next);
+    } catch {
+      window.alert("일정을 Firestore에 저장하지 못했어요. 로그인 상태와 권한을 확인한 뒤 다시 시도해 주세요.");
+    }
   };
   const persistClassSettings = (nextTerms: string[], nextClassesByTerm: Record<string, string[]>, nextTerm: string, nextClass: string) => {
     setTerms(nextTerms); setClassesByTerm(nextClassesByTerm); setTerm(nextTerm); setClassName(nextClass);
