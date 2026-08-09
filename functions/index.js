@@ -47,9 +47,15 @@ exports.saveSchedules = onCall({ region: "asia-northeast3", invoker: "public" },
     }
   }
 
+  // Optional form values (such as an attachment URL) can be undefined in the
+  // browser payload. Firestore does not accept undefined field values.
+  const cleanedAssessments = assessments.map((assessment) =>
+    Object.fromEntries(Object.entries(assessment).filter(([, value]) => value !== undefined))
+  );
+
   await getFirestore().doc("appState/schedules").set({
-    assessments,
+    assessments: cleanedAssessments,
     updatedAt: new Date().toISOString(),
   });
-  return { savedCount: assessments.length };
+  return { savedCount: cleanedAssessments.length };
 });
