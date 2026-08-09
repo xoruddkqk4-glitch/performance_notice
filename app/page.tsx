@@ -33,15 +33,26 @@ const initialAssessments: Assessment[] = [
   { id: 4, subject: "과학", title: "생태계 탐구 보고서", date: "8월 21일 (금)", period: "제출", kind: "보고서", color: "green", term: "2026학년도 2학기", className: "3학년 2반" },
 ];
 
-function printSchedule(view: string) {
-  const originalTitle = document.title;
+async function printSchedule(view: string) {
+  const target = document.querySelector<HTMLElement>(".dashboard .public-calendar") ?? document.querySelector<HTMLElement>(".content-section");
+  if (!target) return;
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas"), import("jspdf")]);
   const now = new Date();
   const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+  const pageText = document.body.innerText;
+  const term = pageText.match(/\d{4}학년도\s*\d학기/)?.[0]?.replace(/\s+/g, "_") ?? "학기";
+  const className = pageText.match(/\d학년\s*\d반/)?.[0]?.replace(/\s+/g, "_") ?? "학급";
   const viewName = view === "과목 카드" ? "카드" : view;
-  document.title = `수행평가_${stamp}_${viewName}뷰`;
-  const restoreTitle = () => { document.title = originalTitle; };
-  window.addEventListener("afterprint", restoreTitle, { once: true });
-  window.print();
+  const canvas = await html2canvas(target, { backgroundColor: "#ffffff", scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: -window.scrollY });
+  const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+  const margin = 6;
+  const maxWidth = 297 - margin * 2;
+  const maxHeight = 210 - margin * 2;
+  const scale = Math.min(maxWidth / canvas.width, maxHeight / canvas.height);
+  const width = canvas.width * scale;
+  const height = canvas.height * scale;
+  pdf.addImage(canvas.toDataURL("image/jpeg", 0.96), "JPEG", (297 - width) / 2, (210 - height) / 2, width, height, undefined, "FAST");
+  pdf.save(`수행평가_${stamp}_${term}_${className}_${viewName}뷰.pdf`);
 }
 
 export default function Home() {
