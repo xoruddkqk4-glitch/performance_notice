@@ -104,10 +104,14 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!isPresident) {
+      setEditors([]);
+      return;
+    }
     return onSnapshot(query(collection(firestore, "editors"), where("active", "==", true)), (snapshot) => {
       setEditors(snapshot.docs.map((item) => item.data() as Editor));
     });
-  }, []);
+  }, [isPresident]);
 
   const persistAssessments = (next: Assessment[]) => {
     setAssessments(next);

@@ -51,3 +51,10 @@ footer { max-width:1160px; margin:auto; padding:26px 30px; display:flex; justify
   .calendar-orientation-tip { margin:-12px 0 12px; font-size:10px; }
   .day-cell .event-dot { min-height:15px; padding:2px; font-size:clamp(5px,1.6vw,7px); line-height:1.25; letter-spacing:-.55px; }
 }
+
+/* Keep the return-to-notice and sign-out controls available in the mobile dashboard. */
+@media (max-width:850px) {
+  .side-nav { flex-wrap:wrap; }
+  .side-bottom { display:flex; align-items:center; gap:2px; margin:0 0 0 auto; padding:0; border:0; }
+  .side-bottom button { display:block; width:auto; padding:8px 7px; font-size:10px; white-space:nowrap; }
+}
