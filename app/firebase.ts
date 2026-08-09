@@ -1,6 +1,7 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -20,6 +21,7 @@ export const firebaseAuth = getAuth(app);
 export const editorProvisioningAuth = getAuth(editorApp);
 export const firestore = getFirestore(app);
 export const storage = getStorage(app);
+export const cloudFunctions = getFunctions(app, "asia-northeast3");
 
 export const ADMIN_UID = "0ejtes6iimOXXkXnwmzDs002rmx1";
 export const ADMIN_EMAIL = "taekyungk21@gmail.com";

@@ -4,7 +4,8 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { ADMIN_EMAIL, ADMIN_UID, editorProvisioningAuth, firebaseAuth, storage } from "./firebase";
+import { httpsCallable } from "firebase/functions";
+import { ADMIN_EMAIL, ADMIN_UID, cloudFunctions, editorProvisioningAuth, firebaseAuth, storage } from "./firebase";
 import { firestore } from "./firebase";
 
 type Assessment = {
@@ -130,6 +131,14 @@ export default function Home() {
     void setDoc(doc(firestore, "appState", "classSettings"), { terms: nextTerms, classesByTerm: nextClassesByTerm, activeTerm: nextTerm, activeClass: nextClass, updatedAt: new Date().toISOString() });
   };
 
+  const deleteEditorAccount = async (uid: string) => {
+    try {
+      await httpsCallable<{ uid: string }, { deletedUid: string }>(cloudFunctions, "deleteEditor")({ uid });
+    } catch {
+      window.alert("계정을 삭제하지 못했어요. 관리자 로그인 상태와 Cloud Function 배포 상태를 확인해 주세요.");
+    }
+  };
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const sharedClass = query.get("class");
@@ -166,7 +175,7 @@ export default function Home() {
   }
 
   if (screen === "dashboard" && isAdmin) {
-    return <Dashboard isPresident={isPresident} assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} terms={terms} classesByTerm={classesByTerm} onSettingsChange={persistClassSettings} editors={editors.filter((editor) => editor.className === className && (!editor.term || editor.term === term))} onRevokeEditor={(uid) => { void setDoc(doc(firestore, "editors", uid), { active: false }, { merge: true }); }} onBack={() => setScreen("notice")} onLogout={() => { void signOut(firebaseAuth); setIsAdmin(false); setIsPresident(false); setScreen("notice"); }} />;
+    return <Dashboard isPresident={isPresident} assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} terms={terms} classesByTerm={classesByTerm} onSettingsChange={persistClassSettings} editors={editors.filter((editor) => editor.className === className && (!editor.term || editor.term === term))} onRevokeEditor={(uid) => { void deleteEditorAccount(uid); }} onBack={() => setScreen("notice")} onLogout={() => { void signOut(firebaseAuth); setIsAdmin(false); setIsPresident(false); setScreen("notice"); }} />;
   }
 
   return (
