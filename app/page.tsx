@@ -56,6 +56,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const browserPrint = window.print.bind(window);
+    window.print = () => {
+      const originalTitle = document.title;
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+      const view = document.querySelector<HTMLButtonElement>(".public-tabs button.selected")?.textContent?.replace("뷰", "") ?? "일정";
+      document.title = `수행평가_${stamp}_${view}뷰`;
+      const restoreTitle = () => { document.title = originalTitle; };
+      window.addEventListener("afterprint", restoreTitle, { once: true });
+      browserPrint();
+    };
+    return () => { window.print = browserPrint; };
+  }, []);
+
+  useEffect(() => {
     return onSnapshot(doc(firestore, "appState", "classSettings"), (snapshot) => {
       const data = snapshot.data() as { terms?: string[]; classesByTerm?: Record<string, string[]>; activeTerm?: string; activeClass?: string } | undefined;
       if (!data) return;
