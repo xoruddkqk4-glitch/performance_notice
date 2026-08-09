@@ -8,7 +8,9 @@ if (!getApps().length) initializeApp();
 const ADMIN_UID = "0ejtes6iimOXXkXnwmzDs002rmx1";
 
 /** Permanently deletes an editor's Authentication account and editor profile. */
-exports.deleteEditor = onCall({ region: "asia-northeast3" }, async (request) => {
+// Public invocation lets the browser reach the callable endpoint; each handler
+// still verifies Firebase Authentication and its own authorization rules.
+exports.deleteEditor = onCall({ region: "asia-northeast3", invoker: "public" }, async (request) => {
   if (request.auth?.uid !== ADMIN_UID) {
     throw new HttpsError("permission-denied", "관리자만 입력 권한 계정을 삭제할 수 있습니다.");
   }
@@ -27,7 +29,7 @@ exports.deleteEditor = onCall({ region: "asia-northeast3" }, async (request) => 
 });
 
 /** Saves every schedule entry after verifying an administrator or active editor. */
-exports.saveSchedules = onCall({ region: "asia-northeast3" }, async (request) => {
+exports.saveSchedules = onCall({ region: "asia-northeast3", invoker: "public" }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
     throw new HttpsError("unauthenticated", "로그인 후 일정을 저장할 수 있습니다.");
