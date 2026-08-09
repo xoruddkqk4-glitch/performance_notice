@@ -217,7 +217,7 @@ export default function Home() {
           </div>
           <div className="next-chip"><span>다음 일정</span><strong>{nextAssessment?.date ?? "일정 없음"}</strong></div>
         </div>
-        <p className="calendar-orientation-tip">이벤트를 클릭하면 잘 보입니다.</p>
+        <p className="calendar-orientation-tip">휴대폰에서는 이벤트를 클릭하면 잘 보입니다.</p>
 
         <FixedCalendar assessments={visibleAssessments} view={calendarView} setView={setCalendarView} date={calendarDate} setDate={setCalendarDate} />
       </section>
