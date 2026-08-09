@@ -1,10 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { doc, onSnapshot, setDoc } from "firebase/firestore";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { ADMIN_EMAIL, ADMIN_UID, firebaseAuth, storage } from "./firebase";
+import { ADMIN_EMAIL, ADMIN_UID, editorProvisioningAuth, firebaseAuth, storage } from "./firebase";
 import { firestore } from "./firebase";
 
 type Assessment = {
@@ -24,7 +24,7 @@ type Assessment = {
   attachmentPath?: string;
 };
 
-type Editor = { id: number; name: string; username: string; password: string; className: string };
+type Editor = { id: number; uid: string; name: string; username: string; className: string };
 
 const initialAssessments: Assessment[] = [
   { id: 1, subject: "국어", title: "문학 작품 분석", date: "8월 11일 (화)", period: "3교시", kind: "발표", color: "pink", templateLink: "https://example.com", term: "2026학년도 2학기", className: "3학년 2반" },
@@ -44,6 +44,8 @@ export default function Home() {
   const [term, setTerm] = useState("2026학년도 2학기");
   const [className, setClassName] = useState("3학년 2반");
   const [editors, setEditors] = useState<Editor[]>([]);
+  const [terms, setTerms] = useState(["2026학년도 1학기", "2026학년도 2학기"]);
+  const [classesByTerm, setClassesByTerm] = useState<Record<string, string[]>>({ "2026학년도 1학기": ["2학년 1반", "2학년 2반"], "2026학년도 2학기": ["3학년 2반", "3학년 3반"] });
   const [calendarDate, setCalendarDate] = useState(new Date(2026, 7, 1));
 
   useEffect(() => {
@@ -53,10 +55,33 @@ export default function Home() {
     });
   }, []);
 
+  useEffect(() => {
+    return onSnapshot(doc(firestore, "appState", "classSettings"), (snapshot) => {
+      const data = snapshot.data() as { terms?: string[]; classesByTerm?: Record<string, string[]>; activeTerm?: string; activeClass?: string } | undefined;
+      if (!data) return;
+      if (data.terms) setTerms(data.terms);
+      if (data.classesByTerm) setClassesByTerm(data.classesByTerm);
+      if (data.activeTerm) setTerm(data.activeTerm);
+      if (data.activeClass !== undefined) setClassName(data.activeClass);
+    });
+  }, []);
+
+  useEffect(() => {
+    return onSnapshot(doc(firestore, "editors", "directory"), (snapshot) => {
+      const data = snapshot.data() as { editors?: Editor[] } | undefined;
+      if (data?.editors) setEditors(data.editors);
+    });
+  }, []);
+
   const persistAssessments = (next: Assessment[]) => {
     setAssessments(next);
     void setDoc(doc(firestore, "appState", "schedules"), { assessments: next, updatedAt: new Date().toISOString() });
   };
+  const persistClassSettings = (nextTerms: string[], nextClassesByTerm: Record<string, string[]>, nextTerm: string, nextClass: string) => {
+    setTerms(nextTerms); setClassesByTerm(nextClassesByTerm); setTerm(nextTerm); setClassName(nextClass);
+    void setDoc(doc(firestore, "appState", "classSettings"), { terms: nextTerms, classesByTerm: nextClassesByTerm, activeTerm: nextTerm, activeClass: nextClass, updatedAt: new Date().toISOString() });
+  };
+  const persistEditors = (next: Editor[]) => { const removed = editors.filter((editor) => !next.some((item) => item.uid === editor.uid)); setEditors(next); void Promise.all([setDoc(doc(firestore, "editors", "directory"), { editors: next, updatedAt: new Date().toISOString() }), ...removed.map((editor) => setDoc(doc(firestore, "editors", editor.uid), { active: false }, { merge: true }))]); };
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -74,9 +99,11 @@ export default function Home() {
     const data = new FormData(event.currentTarget);
     const username = String(data.get("username"));
     const password = String(data.get("password"));
-    let canEdit = editors.some((editor) => editor.username === username && editor.password === password);
+    let canEdit = false;
     if (username === "admin") {
       try { const credential = await signInWithEmailAndPassword(firebaseAuth, ADMIN_EMAIL, password); canEdit = credential.user.uid === ADMIN_UID; } catch { canEdit = false; }
+    } else {
+      try { const credential = await signInWithEmailAndPassword(firebaseAuth, `${username}@performance-notice.local`, password); const profile = await getDoc(doc(firestore, "editors", credential.user.uid)); canEdit = profile.exists() && profile.data().active === true; } catch { canEdit = false; }
     }
     if (canEdit) {
       setIsAdmin(true);
@@ -90,7 +117,7 @@ export default function Home() {
   }
 
   if (screen === "dashboard" && isAdmin) {
-    return <Dashboard assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} editors={editors} setEditors={setEditors} onBack={() => setScreen("notice")} onLogout={() => { setIsAdmin(false); setScreen("notice"); }} />;
+    return <Dashboard assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} terms={terms} classesByTerm={classesByTerm} onSettingsChange={persistClassSettings} editors={editors} setEditors={persistEditors} onBack={() => setScreen("notice")} onLogout={() => { void signOut(firebaseAuth); setIsAdmin(false); setScreen("notice"); }} />;
   }
 
   return (
@@ -178,9 +205,9 @@ function FixedCalendar(props: { assessments: Assessment[]; view: "월간" | "2�
   return <><div className="view-tabs public-tabs">{(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>{item === "과목 카드" ? "카드뷰" : `${item}뷰`}</button>)}<span className="print-actions"><button onClick={() => window.print()}>PDF 출력</button></span></div><section className="calendar-panel public-calendar"><div className="calendar-title"><div className="calendar-nav"><button className="today-button" onClick={() => setDate(new Date())}>오늘</button><button onClick={() => move(-1)}>‹</button><button onClick={() => move(1)}>›</button></div><div><strong>{heading}</strong><span>수행평가 일정</span></div></div>{view === "일간" ? <div className="period-grid">{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"].map((period) => <div className="period-row" key={period}><b>{period}</b><div>{eventsFor(start).filter((event) => event.period.startsWith(period)).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div></div>)}</div> : <><div className="weekdays">{["일", "월", "화", "수", "목", "금", "토"].map((item) => <span key={item}>{item}</span>)}</div><div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>{cells.map((day) => <div className={`day-cell ${day.toDateString() === now.toDateString() ? "today" : ""}`} key={day.toISOString()}><span>{day.getDate()}</span>{eventsFor(day).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div>)}</div></>}</section>{selected && <div className="detail-backdrop" onClick={() => setSelected(null)}><article className={`detail-card schedule-card ${selected.color}`} onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setSelected(null)}>×</button><p className="eyebrow dark">SCHEDULE DETAIL</p><h3>[{selected.subject}]{selected.title}({selected.period})</h3><p>{selected.date} · {selected.kind}</p>{selected.templateLink && <a href={selected.templateLink} target="_blank">양식 링크 열기 ↗</a>}</article></div>}</>;
 }
 
-function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCalendarView, term, setTerm, className, setClassName, editors, setEditors, onBack, onLogout }: {
+function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCalendarView, term, setTerm, className, setClassName, terms, classesByTerm, onSettingsChange, editors, setEditors, onBack, onLogout }: {
   assessments: Assessment[]; onAdd: (item: Assessment) => void; onDelete: (id: number) => void; onEdit: (item: Assessment) => void; calendarView: "월간" | "2주" | "주간" | "일간" | "과목 카드"; setCalendarView: (view: "월간" | "2주" | "주간" | "일간" | "과목 카드") => void;
-  term: string; setTerm: (term: string) => void; className: string; setClassName: (name: string) => void; editors: Editor[]; setEditors: (editors: Editor[]) => void; onBack: () => void; onLogout: () => void;
+  term: string; setTerm: (term: string) => void; className: string; setClassName: (name: string) => void; terms: string[]; classesByTerm: Record<string, string[]>; onSettingsChange: (terms: string[], classesByTerm: Record<string, string[]>, term: string, className: string) => void; editors: Editor[]; setEditors: (editors: Editor[]) => void; onBack: () => void; onLogout: () => void;
 }) {
   const [tab, setTab] = useState<"calendar" | "members">("calendar");
   const [invite, setInvite] = useState({ name: "", username: "", password: "" });
@@ -191,14 +218,15 @@ function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCale
   const [uploadError, setUploadError] = useState("");
   const [copied, setCopied] = useState(false);
   const [dashboardDate, setDashboardDate] = useState(new Date(2026, 7, 1));
-  const [terms, setTerms] = useState(["2026학년도 1학기", "2026학년도 2학기"]);
-  const [classesByTerm, setClassesByTerm] = useState<Record<string, string[]>>({
-    "2026학년도 1학기": ["2학년 1반", "2학년 2반"],
-    "2026학년도 2학기": ["3학년 2반", "3학년 3반"],
-  });
   const [newTerm, setNewTerm] = useState(""); const [newClass, setNewClass] = useState(""); const [addingTerm, setAddingTerm] = useState(false); const [addingClass, setAddingClass] = useState(false);
   const termClasses = classesByTerm[term] ?? [];
-  function inviteEditor(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!invite.name || !invite.username || !invite.password) return; setEditors([...editors, { id: Date.now(), ...invite, className }]); setInvite({ name: "", username: "", password: "" }); }
+  const chooseTerm = (nextTerm: string) => onSettingsChange(terms, classesByTerm, nextTerm, (classesByTerm[nextTerm] ?? [])[0] ?? "");
+  const chooseClass = (nextClass: string) => onSettingsChange(terms, classesByTerm, term, nextClass);
+  const addTerm = (nextTerm: string) => onSettingsChange([...terms, nextTerm], { ...classesByTerm, [nextTerm]: [] }, nextTerm, "");
+  const addClass = (nextClass: string) => onSettingsChange(terms, { ...classesByTerm, [term]: [...termClasses, nextClass] }, term, nextClass);
+  const removeTerm = (item: string) => { const nextTerms = terms.filter((value) => value !== item); const { [item]: _, ...nextClasses } = classesByTerm; const nextTerm = term === item ? nextTerms[0] : term; onSettingsChange(nextTerms, nextClasses, nextTerm, term === item ? (nextClasses[nextTerm] ?? [])[0] ?? "" : className); };
+  const removeClass = (item: string) => { const nextClasses = termClasses.filter((value) => value !== item); onSettingsChange(terms, { ...classesByTerm, [term]: nextClasses }, term, className === item ? nextClasses[0] ?? "" : className); };
+  async function inviteEditor(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!invite.name || !invite.username || !invite.password || invite.password.length < 6) return; try { const credential = await createUserWithEmailAndPassword(editorProvisioningAuth, `${invite.username}@performance-notice.local`, invite.password); const editor = { id: Date.now(), uid: credential.user.uid, name: invite.name, username: invite.username, className }; await setDoc(doc(firestore, "editors", credential.user.uid), { ...editor, active: true }); setEditors([...editors, editor]); await signOut(editorProvisioningAuth); setInvite({ name: "", username: "", password: "" }); } catch { window.alert("입력 권한 계정을 만들지 못했어요. 아이디가 이미 사용 중인지와 비밀번호를 확인해 주세요."); } }
   const resetEntry = () => { setEntry({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "설명", supplies: "", templateLink: "" }); setAttachment(null); setEditingId(null); };
   async function addEntry(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!entry.subject || !entry.title || !entry.date || !entry.period || isUploading) return; const existing = editingId ? assessments.find((item) => item.id === editingId) : undefined; const toLabel = (value: string) => { const [, m, d] = value.match(/\d{4}-(\d{2})-(\d{2})/) ?? []; return `${Number(m)}월 ${Number(d)}일`; }; const color = ({ "국어":"pink", "영어":"purple", "수학":"blue", "사회":"orange", "과학":"green" } as Record<string, Assessment["color"]>)[entry.subject] ?? "gray"; setUploadError(""); setIsUploading(true); try { let attachmentName = existing?.attachmentName; let attachmentUrl = existing?.attachmentUrl; let attachmentPath = existing?.attachmentPath; if (attachment) { const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_"); attachmentPath = `attachments/${Date.now()}-${safeName}`; const fileRef = ref(storage, attachmentPath); await uploadBytes(fileRef, attachment, { contentType: attachment.type || "application/octet-stream" }); attachmentUrl = await getDownloadURL(fileRef); attachmentName = attachment.name; if (existing?.attachmentPath) void deleteObject(ref(storage, existing.attachmentPath)).catch(() => undefined); } const updated = { id: editingId ?? Date.now(), subject: entry.subject, title: entry.title, date: entry.endDate ? `${toLabel(entry.date)} ~ ${toLabel(entry.endDate)}` : toLabel(entry.date), period: entry.endPeriod ? `${entry.period}~${entry.endPeriod}` : entry.period, kind: entry.kind, supplies: entry.supplies, templateLink: entry.templateLink, attachmentName, attachmentUrl, attachmentPath, color }; if (editingId) onEdit(updated); else onAdd(updated); resetEntry(); } catch { setUploadError("첨부 파일을 업로드하지 못했어요. Storage 규칙과 로그인 상태를 확인해 주세요."); } finally { setIsUploading(false); } }
   function startEditing(item: Assessment) { const year = term.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear()); const dates = [...item.date.matchAll(/(\d+)월\s*(\d+)일/g)].map((match) => `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`); const [period, endPeriod = ""] = item.period.split("~"); setEntry({ subject: item.subject, title: item.title, date: dates[0] ?? "", endDate: dates[1] ?? "", period, endPeriod, kind: item.kind, supplies: item.supplies ?? "", templateLink: item.templateLink ?? "" }); setAttachment(null); setUploadError(""); setEditingId(item.id); document.getElementById("schedule-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }); }
@@ -215,7 +243,16 @@ function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCale
     <aside className="side-nav"><a className="brand dash-brand" href="#top"><span>{(() => { const m = term.match(/(\d{4}).*?(\d)학기/); return m ? `${m[1].slice(2)}-${m[2]}` : term; })()}</span>{className}</a><p className="side-label">{term} · ADMIN CONSOLE</p><button className={tab === "calendar" ? "side-active" : ""} onClick={() => setTab("calendar")}>▦&nbsp; 수행평가 일정</button><button className={tab === "members" ? "side-active" : ""} onClick={() => setTab("members")}>♙&nbsp; 입력 권한 관리</button><div className="side-bottom"><button onClick={onBack}>← 학생용 공지 보기</button><button onClick={onLogout}>로그아웃</button></div></aside>
     <section className="dash-main" id="top"><header className="dash-header"><div><p className="eyebrow dark">CLASS MANAGEMENT</p><h1>{tab === "calendar" ? "수행평가 대시보드" : "입력 권한 관리"}</h1></div><span className="admin-badge">회장 관리자</span></header>
       {tab === "calendar" ? <>
-        <div className="choice-panels"><section><b>학기 선택</b><button className="plus-create" onClick={() => setAddingTerm(!addingTerm)}>＋</button>{addingTerm && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextTerm = newTerm.trim(); if (nextTerm && !terms.includes(nextTerm)) { setTerms([...terms, nextTerm]); setClassesByTerm({ ...classesByTerm, [nextTerm]: [] }); setTerm(nextTerm); setClassName(""); } setNewTerm(""); setAddingTerm(false); }}><input autoFocus value={newTerm} onChange={(event) => setNewTerm(event.target.value)} placeholder="새 학기명"/><button>추가</button></form>}<div>{terms.map((item) => <span className="choice-item" key={item}><button className={term === item ? "chosen" : ""} onClick={() => { setTerm(item); setClassName((classesByTerm[item] ?? [])[0] ?? ""); }}>{item}</button><button className="choice-delete" onClick={() => { if (terms.length === 1 || !window.confirm(`'${item}' 학기를 삭제할까요?`)) return; const next = terms.filter((value) => value !== item); const { [item]: _, ...nextClassesByTerm } = classesByTerm; setTerms(next); setClassesByTerm(nextClassesByTerm); if (term === item) { setTerm(next[0]); setClassName((nextClassesByTerm[next[0]] ?? [])[0] ?? ""); } }}>×</button></span>)}</div></section><section><b>학급 선택</b><button className="plus-create" onClick={() => setAddingClass(!addingClass)}>＋</button>{addingClass && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextClass = newClass.trim(); if (nextClass && !termClasses.includes(nextClass)) { setClassesByTerm({ ...classesByTerm, [term]: [...termClasses, nextClass] }); setClassName(nextClass); } setNewClass(""); setAddingClass(false); }}><input autoFocus value={newClass} onChange={(event) => setNewClass(event.target.value)} placeholder="새 학급명"/><button>추가</button></form>}<div>{termClasses.map((item) => <span className="choice-item" key={item}><button className={className === item ? "chosen" : ""} onClick={() => setClassName(item)}>{item}</button><button className="choice-delete" onClick={() => { if (!window.confirm(`'${item}' 학급을 삭제할까요?`)) return; const next = termClasses.filter((value) => value !== item); setClassesByTerm({ ...classesByTerm, [term]: next }); if (className === item) setClassName(next[0] ?? ""); }}>×</button></span>)}</div></section></div>
+        <div className="choice-panels">
+          <section><b>학기 선택</b><button className="plus-create" onClick={() => setAddingTerm(!addingTerm)}>＋</button>
+            {addingTerm && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextTerm = newTerm.trim(); if (nextTerm && !terms.includes(nextTerm)) addTerm(nextTerm); setNewTerm(""); setAddingTerm(false); }}><input autoFocus value={newTerm} onChange={(event) => setNewTerm(event.target.value)} placeholder="새 학기명"/><button>추가</button></form>}
+            <div>{terms.map((item) => <span className="choice-item" key={item}><button className={term === item ? "chosen" : ""} onClick={() => chooseTerm(item)}>{item}</button><button className="choice-delete" onClick={() => { if (terms.length !== 1 && window.confirm(`'${item}' 학기를 삭제할까요?`)) removeTerm(item); }}>×</button></span>)}</div>
+          </section>
+          <section><b>학급 선택</b><button className="plus-create" onClick={() => setAddingClass(!addingClass)}>＋</button>
+            {addingClass && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextClass = newClass.trim(); if (nextClass && !termClasses.includes(nextClass)) addClass(nextClass); setNewClass(""); setAddingClass(false); }}><input autoFocus value={newClass} onChange={(event) => setNewClass(event.target.value)} placeholder="새 학급명"/><button>추가</button></form>}
+            <div>{termClasses.map((item) => <span className="choice-item" key={item}><button className={className === item ? "chosen" : ""} onClick={() => chooseClass(item)}>{item}</button><button className="choice-delete" onClick={() => { if (window.confirm(`'${item}' 학급을 삭제할까요?`)) removeClass(item); }}>×</button></span>)}</div>
+          </section>
+        </div>
         <section className="share-panel"><p className="eyebrow dark">SCHEDULE SHARE</p><h2>일정 공유</h2><p>학생용 공유 페이지: <code>{shareLink}</code></p><button className={`copy-link ${copied ? "copied" : ""}`} onClick={copyShareLink}>{copied ? "복사됨 ✓" : "링크 복사"}</button><img className="share-qr" src={shareQr} alt={`${term} ${className} 학생용 공유 페이지 QR 코드`} /></section>
         <section className="all-events-panel"><div className="all-events-heading"><div><p className="eyebrow dark">ALL SCHEDULES</p><h2>{term} · {className} 전체 일정</h2></div><span>{assessments.length}건</span></div>{activeSubjectGroups.length ? <div className={`subject-event-groups count-${activeSubjectGroups.length}`} style={{ gridTemplateColumns: `repeat(${activeSubjectGroups.length}, minmax(0, 1fr))` }}>{activeSubjectGroups.map(({ subject, color, items }) => <section className={`subject-event-group ${color}`} key={subject}><h3>{subject}</h3>{items.map((item) => <div className="event-list-row" key={item.id}><span>{item.date} · {item.title} ({item.period})</span></div>)}</section>)}</div> : <p className="empty-schedule">선택한 학기와 학급에 등록된 일정이 없어요.</p>}</section>
         <FixedCalendar assessments={assessments} view={calendarView} setView={setCalendarView} date={dashboardDate} setDate={setDashboardDate} onDelete={onDelete} onEdit={startEditing} />

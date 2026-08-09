@@ -2,10 +2,15 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
+    function isEditor() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/editors/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/editors/$(request.auth.uid)).data.active == true;
+    }
     match /attachments/{allPaths=**} {
       allow read: if true;
       allow write: if request.auth != null
-        && request.auth.uid == '0ejtes6iimOXXkXnwmzDs002rmx1';
+        && (request.auth.uid == '0ejtes6iimOXXkXnwmzDs002rmx1' || isEditor());
     }
   }
 }

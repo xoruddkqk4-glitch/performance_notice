@@ -13,7 +13,11 @@ const firebaseConfig = {
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+const editorApp = getApps().some((item) => item.name === "editor-provisioning")
+  ? getApp("editor-provisioning")
+  : initializeApp(firebaseConfig, "editor-provisioning");
 export const firebaseAuth = getAuth(app);
+export const editorProvisioningAuth = getAuth(editorApp);
 export const firestore = getFirestore(app);
 export const storage = getStorage(app);
 
