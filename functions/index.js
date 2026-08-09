@@ -25,3 +25,29 @@ exports.deleteEditor = onCall({ region: "asia-northeast3" }, async (request) => 
   await getFirestore().doc(`editors/${uid}`).delete();
   return { deletedUid: uid };
 });
+
+/** Saves every schedule entry after verifying an administrator or active editor. */
+exports.saveSchedules = onCall({ region: "asia-northeast3" }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "로그인 후 일정을 저장할 수 있습니다.");
+  }
+
+  const assessments = request.data?.assessments;
+  if (!Array.isArray(assessments)) {
+    throw new HttpsError("invalid-argument", "일정 데이터 형식이 올바르지 않습니다.");
+  }
+
+  if (uid !== ADMIN_UID) {
+    const editor = await getFirestore().doc(`editors/${uid}`).get();
+    if (!editor.exists || editor.data()?.active !== true) {
+      throw new HttpsError("permission-denied", "입력 권한이 있는 사용자만 일정을 저장할 수 있습니다.");
+    }
+  }
+
+  await getFirestore().doc("appState/schedules").set({
+    assessments,
+    updatedAt: new Date().toISOString(),
+  });
+  return { savedCount: assessments.length };
+});

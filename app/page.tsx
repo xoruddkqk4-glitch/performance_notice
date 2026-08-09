@@ -130,10 +130,10 @@ export default function Home() {
 
   const persistAssessments = async (next: Assessment[]) => {
     try {
-      await setDoc(doc(firestore, "appState", "schedules"), { assessments: next, updatedAt: new Date().toISOString() });
+      await httpsCallable<{ assessments: Assessment[] }, { savedCount: number }>(cloudFunctions, "saveSchedules")({ assessments: next });
       setAssessments(next);
     } catch {
-      window.alert("일정을 Firestore에 저장하지 못했어요. 로그인 상태와 권한을 확인한 뒤 다시 시도해 주세요.");
+      window.alert("일정을 Firestore에 저장하지 못했어요. 로그인 상태와 입력 권한을 확인한 뒤 다시 시도해 주세요.");
     }
   };
   const persistClassSettings = (nextTerms: string[], nextClassesByTerm: Record<string, string[]>, nextTerm: string, nextClass: string) => {
