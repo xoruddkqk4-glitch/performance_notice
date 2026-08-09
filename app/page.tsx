@@ -1,6 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { doc, onSnapshot, setDoc } from "firebase/firestore";
+import { ADMIN_EMAIL, ADMIN_UID, firebaseAuth } from "./firebase";
+import { firestore } from "./firebase";
 
 type Assessment = {
   id: number;
@@ -14,6 +18,7 @@ type Assessment = {
   term?: string;
   className?: string;
   supplies?: string;
+  attachmentName?: string;
 };
 
 type Editor = { id: number; name: string; username: string; password: string; className: string };
@@ -39,6 +44,18 @@ export default function Home() {
   const [calendarDate, setCalendarDate] = useState(new Date(2026, 7, 1));
 
   useEffect(() => {
+    return onSnapshot(doc(firestore, "appState", "schedules"), (snapshot) => {
+      const data = snapshot.data() as { assessments?: Assessment[] } | undefined;
+      if (data?.assessments) setAssessments(data.assessments);
+    });
+  }, []);
+
+  const persistAssessments = (next: Assessment[]) => {
+    setAssessments(next);
+    void setDoc(doc(firestore, "appState", "schedules"), { assessments: next, updatedAt: new Date().toISOString() });
+  };
+
+  useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const sharedClass = query.get("class");
     const sharedTerm = query.get("term");
@@ -54,9 +71,10 @@ export default function Home() {
     const data = new FormData(event.currentTarget);
     const username = String(data.get("username"));
     const password = String(data.get("password"));
-    const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, password }) });
-    const result = await response.json() as { authenticated?: boolean };
-    const canEdit = result.authenticated || editors.some((editor) => editor.username === username && editor.password === password);
+    let canEdit = editors.some((editor) => editor.username === username && editor.password === password);
+    if (username === "admin") {
+      try { const credential = await signInWithEmailAndPassword(firebaseAuth, ADMIN_EMAIL, password); canEdit = credential.user.uid === ADMIN_UID; } catch { canEdit = false; }
+    }
     if (canEdit) {
       setIsAdmin(true);
       setIsLoginOpen(false);
@@ -69,7 +87,7 @@ export default function Home() {
   }
 
   if (screen === "dashboard" && isAdmin) {
-    return <Dashboard assessments={visibleAssessments} onAdd={(item) => setAssessments((current) => [...current, { ...item, term, className }])} onDelete={(id) => setAssessments((current) => current.filter((item) => item.id !== id))} onEdit={(updated) => setAssessments((current) => current.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} editors={editors} setEditors={setEditors} onBack={() => setScreen("notice")} onLogout={() => { setIsAdmin(false); setScreen("notice"); }} />;
+    return <Dashboard assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} editors={editors} setEditors={setEditors} onBack={() => setScreen("notice")} onLogout={() => { setIsAdmin(false); setScreen("notice"); }} />;
   }
 
   return (
@@ -165,6 +183,7 @@ function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCale
   const [invite, setInvite] = useState({ name: "", username: "", password: "" });
   const [entry, setEntry] = useState({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "설명", supplies: "", templateLink: "" });
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [copied, setCopied] = useState(false);
   const [dashboardDate, setDashboardDate] = useState(new Date(2026, 7, 1));
   const [terms, setTerms] = useState(["2026학년도 1학기", "2026학년도 2학기"]);
@@ -175,8 +194,8 @@ function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCale
   const [newTerm, setNewTerm] = useState(""); const [newClass, setNewClass] = useState(""); const [addingTerm, setAddingTerm] = useState(false); const [addingClass, setAddingClass] = useState(false);
   const termClasses = classesByTerm[term] ?? [];
   function inviteEditor(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!invite.name || !invite.username || !invite.password) return; setEditors([...editors, { id: Date.now(), ...invite, className }]); setInvite({ name: "", username: "", password: "" }); }
-  const resetEntry = () => { setEntry({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "설명", supplies: "", templateLink: "" }); setEditingId(null); };
-  function addEntry(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!entry.subject || !entry.title || !entry.date || !entry.period) return; const toLabel = (value: string) => { const [, m, d] = value.match(/\d{4}-(\d{2})-(\d{2})/) ?? []; return `${Number(m)}월 ${Number(d)}일`; }; const color = ({ "국어":"pink", "영어":"purple", "수학":"blue", "사회":"orange", "과학":"green" } as Record<string, Assessment["color"]>)[entry.subject] ?? "gray"; const updated = { id: editingId ?? Date.now(), subject: entry.subject, title: entry.title, date: entry.endDate ? `${toLabel(entry.date)} ~ ${toLabel(entry.endDate)}` : toLabel(entry.date), period: entry.endPeriod ? `${entry.period}~${entry.endPeriod}` : entry.period, kind: entry.kind, templateLink: entry.templateLink, color }; if (editingId) onEdit(updated); else onAdd(updated); resetEntry(); }
+  const resetEntry = () => { setEntry({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "설명", supplies: "", templateLink: "" }); setAttachment(null); setEditingId(null); };
+  function addEntry(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!entry.subject || !entry.title || !entry.date || !entry.period) return; const toLabel = (value: string) => { const [, m, d] = value.match(/\d{4}-(\d{2})-(\d{2})/) ?? []; return `${Number(m)}월 ${Number(d)}일`; }; const color = ({ "국어":"pink", "영어":"purple", "수학":"blue", "사회":"orange", "과학":"green" } as Record<string, Assessment["color"]>)[entry.subject] ?? "gray"; const updated = { id: editingId ?? Date.now(), subject: entry.subject, title: entry.title, date: entry.endDate ? `${toLabel(entry.date)} ~ ${toLabel(entry.endDate)}` : toLabel(entry.date), period: entry.endPeriod ? `${entry.period}~${entry.endPeriod}` : entry.period, kind: entry.kind, templateLink: entry.templateLink, attachmentName: attachment?.name, color }; if (editingId) onEdit(updated); else onAdd(updated); resetEntry(); }
   function startEditing(item: Assessment) { const year = term.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear()); const dates = [...item.date.matchAll(/(\d+)월\s*(\d+)일/g)].map((match) => `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`); const [period, endPeriod = ""] = item.period.split("~"); setEntry({ subject: item.subject, title: item.title, date: dates[0] ?? "", endDate: dates[1] ?? "", period, endPeriod, kind: item.kind, supplies: item.supplies ?? "", templateLink: item.templateLink ?? "" }); setEditingId(item.id); document.getElementById("schedule-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }); }
   const shareLink = typeof window === "undefined" ? "" : `${window.location.origin}/?class=${encodeURIComponent(className)}&term=${encodeURIComponent(term)}`;
   const shareQr = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=${encodeURIComponent(shareLink)}`;
@@ -195,7 +214,7 @@ function Dashboard({ assessments, onAdd, onDelete, onEdit, calendarView, setCale
         <section className="share-panel"><p className="eyebrow dark">SCHEDULE SHARE</p><h2>일정 공유</h2><p>학생용 공유 페이지: <code>{shareLink}</code></p><button className={`copy-link ${copied ? "copied" : ""}`} onClick={copyShareLink}>{copied ? "복사됨 ✓" : "링크 복사"}</button><img className="share-qr" src={shareQr} alt={`${term} ${className} 학생용 공유 페이지 QR 코드`} /></section>
         <section className="all-events-panel"><div className="all-events-heading"><div><p className="eyebrow dark">ALL SCHEDULES</p><h2>{term} · {className} 전체 일정</h2></div><span>{assessments.length}건</span></div>{activeSubjectGroups.length ? <div className={`subject-event-groups count-${activeSubjectGroups.length}`} style={{ gridTemplateColumns: `repeat(${activeSubjectGroups.length}, minmax(0, 1fr))` }}>{activeSubjectGroups.map(({ subject, color, items }) => <section className={`subject-event-group ${color}`} key={subject}><h3>{subject}</h3>{items.map((item) => <div className="event-list-row" key={item.id}><span>{item.date} · {item.title} ({item.period})</span></div>)}</section>)}</div> : <p className="empty-schedule">선택한 학기와 학급에 등록된 일정이 없어요.</p>}</section>
         <FixedCalendar assessments={assessments} view={calendarView} setView={setCalendarView} date={dashboardDate} setDate={setDashboardDate} onDelete={onDelete} onEdit={startEditing} />
-        <section className="entry-panel" id="schedule-entry"><div><p className="eyebrow dark">SCHEDULE INPUT</p><h2>{editingId ? "일정 수정" : "일정 입력 및 공유"}</h2><p>학생용 공유 페이지: <code>{shareLink}</code></p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(shareLink)}>링크 복사</button><img className="share-qr" src="/student-share-qr.png" alt="학생용 공유 페이지 QR 코드" /></div><form className="entry-form" onSubmit={addEntry}><input placeholder="과목" value={entry.subject} onChange={(e) => setEntry({ ...entry, subject: e.target.value })}/><input placeholder="제목" value={entry.title} onChange={(e) => setEntry({ ...entry, title: e.target.value })}/><label>시작일<input type="date" value={entry.date} onChange={(e) => setEntry({ ...entry, date: e.target.value })}/></label><label>종료일 (기간 선택)<input type="date" value={entry.endDate} min={entry.date} onChange={(e) => setEntry({ ...entry, endDate: e.target.value })}/></label><label>교시<select value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })}><option value="">선택</option>{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시", "제출"].map((item) => <option key={item}>{item}</option>)}</select></label><input placeholder="설명" value={entry.kind} onChange={(e) => setEntry({ ...entry, kind: e.target.value })}/><input placeholder="양식 링크 (선택)" value={entry.templateLink} onChange={(e) => setEntry({ ...entry, templateLink: e.target.value })}/><button>{editingId ? "일정 수정" : "일정 추가"}</button>{editingId && <button type="button" className="cancel-edit" onClick={resetEntry}>취소</button>}</form></section>
+        <section className="entry-panel" id="schedule-entry"><div><p className="eyebrow dark">SCHEDULE INPUT</p><h2>{editingId ? "일정 수정" : "일정 입력 및 공유"}</h2></div><form className="entry-form" onSubmit={addEntry}><input placeholder="과목" value={entry.subject} onChange={(e) => setEntry({ ...entry, subject: e.target.value })}/><input placeholder="제목" value={entry.title} onChange={(e) => setEntry({ ...entry, title: e.target.value })}/><label>시작일<input type="date" value={entry.date} onChange={(e) => setEntry({ ...entry, date: e.target.value })}/></label><label>종료일 (기간 선택)<input type="date" value={entry.endDate} min={entry.date} onChange={(e) => setEntry({ ...entry, endDate: e.target.value })}/></label><label>교시<select value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })}><option value="">선택</option>{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시", "제출"].map((item) => <option key={item}>{item}</option>)}</select></label><input placeholder="설명" value={entry.kind} onChange={(e) => setEntry({ ...entry, kind: e.target.value })}/><input placeholder="양식 링크 (선택)" value={entry.templateLink} onChange={(e) => setEntry({ ...entry, templateLink: e.target.value })}/><label className="attachment-input">첨부 파일 (선택)<input type="file" onChange={(e) => setAttachment(e.target.files?.[0] ?? null)} /></label><button>{editingId ? "일정 수정" : "일정 추가"}</button>{editingId && <button type="button" className="cancel-edit" onClick={resetEntry}>취소</button>}</form></section>
         <p className="dash-tip">학생들은 공지 화면에서 일정만 확인하며, 편집 권한이 있는 계정만 이 대시보드에서 입력할 수 있습니다.</p>
       </> : <section className="permission-layout"><div className="permission-intro"><p className="eyebrow dark">EDITOR ACCESS</p><h2>누가 일정을 입력할 수 있나요?</h2><p>회장은 필요한 학생에게만 아이디와 비밀번호를 만들어 주고, 해당 학급의 일정 입력 권한을 나눌 수 있어요.</p><form onSubmit={inviteEditor} className="invite-form"><input placeholder="학생 이름" value={invite.name} onChange={(e) => setInvite({ ...invite, name: e.target.value })} /><input placeholder="아이디" value={invite.username} onChange={(e) => setInvite({ ...invite, username: e.target.value })} /><input placeholder="임시 비밀번호" value={invite.password} onChange={(e) => setInvite({ ...invite, password: e.target.value })} /><button>입력 권한 부여</button></form></div><div className="member-list"><div className="member-row owner"><span>회장 관리자</span><strong>admin</strong><em>전체 학급 관리</em></div>{editors.map((editor) => <div className="member-row" key={editor.id}><span>{editor.name}</span><strong>{editor.username}</strong><em>{editor.className} 입력 가능</em><button onClick={() => setEditors(editors.filter((item) => item.id !== editor.id))}>권한 해제</button></div>)}</div></section>}
     </section></main>;
