@@ -75,3 +75,11 @@ footer { max-width:1160px; margin:auto; padding:26px 30px; display:flex; justify
   .entry-form { grid-template-columns:1fr; gap:10px; }
   .entry-form > input,.entry-form label input,.entry-form label select,.entry-form .attachment-input input { min-height:46px; }
 }
+
+.entry-actions { grid-column:1 / -1; display:grid; grid-template-columns:1fr; gap:12px; }
+.entry-actions button { min-height:48px; border:0; border-radius:3px; background:var(--blue); color:#fff; font-weight:700; font-size:14px; }
+.entry-panel.editing { background:#e5f3ee; border-left-color:var(--green); }.entry-panel.editing h2 { color:#0d6f5b; }
+.entry-panel.editing .entry-actions { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.entry-panel.editing .entry-actions button:first-child { background:var(--green); }
+.entry-panel.editing .entry-actions .cancel-edit { border:1px solid #8bb9ab; background:#fff; color:#176b59; }
+@media (max-width:640px) { .entry-panel.editing .entry-actions { grid-template-columns:repeat(2,minmax(0,1fr)); } }
