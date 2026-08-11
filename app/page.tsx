@@ -27,12 +27,7 @@ type Assessment = {
 
 type Editor = { id: number; uid: string; name: string; username: string; term?: string; className: string };
 
-const initialAssessments: Assessment[] = [
-  { id: 1, subject: "국어", title: "문학 작품 분석", date: "8월 11일 (화)", period: "3교시", kind: "발표", color: "pink", templateLink: "https://example.com", term: "2026학년도 2학기", className: "3학년 2반" },
-  { id: 2, subject: "수학", title: "함수 개념 확인", date: "8월 14일 (금)", period: "2교시", kind: "시험", color: "blue", term: "2026학년도 2학기", className: "3학년 2반" },
-  { id: 3, subject: "영어", title: "Unit 4 말하기", date: "8월 18일 (화)", period: "4교시", kind: "말하기", color: "purple", term: "2026학년도 2학기", className: "3학년 2반" },
-  { id: 4, subject: "과학", title: "생태계 탐구 보고서", date: "8월 21일 (금)", period: "제출", kind: "보고서", color: "green", term: "2026학년도 2학기", className: "3학년 2반" },
-];
+const initialAssessments: Assessment[] = [];
 
 const calendarViewLabels: Record<"월간" | "2주" | "주간" | "일간" | "과목 카드", string> = {
   "과목 카드": "List",
@@ -95,12 +90,12 @@ export default function Home() {
   const [notice, setNotice] = useState("수행평가 일정은 변경될 수 있으니 수업 시간에 한 번 더 확인해 주세요.");
   const [screen, setScreen] = useState<"notice" | "dashboard">("notice");
   const [calendarView, setCalendarView] = useState<"월간" | "2주" | "주간" | "일간" | "과목 카드">("월간");
-  const [term, setTerm] = useState("2026학년도 2학기");
-  const [className, setClassName] = useState("3학년 2반");
+  const [term, setTerm] = useState("");
+  const [className, setClassName] = useState("");
   const [editors, setEditors] = useState<Editor[]>([]);
-  const [terms, setTerms] = useState(["2026학년도 1학기", "2026학년도 2학기"]);
-  const [classesByTerm, setClassesByTerm] = useState<Record<string, string[]>>({ "2026학년도 1학기": ["2학년 1반", "2학년 2반"], "2026학년도 2학기": ["3학년 2반", "3학년 3반"] });
-  const [calendarDate, setCalendarDate] = useState(new Date(2026, 7, 1));
+  const [terms, setTerms] = useState<string[]>([]);
+  const [classesByTerm, setClassesByTerm] = useState<Record<string, string[]>>({});
+  const [calendarDate, setCalendarDate] = useState(new Date());
 
   useEffect(() => {
     return onSnapshot(doc(firestore, "appState", "schedules"), (snapshot) => {
@@ -203,7 +198,7 @@ export default function Home() {
         <div className="hero-content">
           <p className="eyebrow">PERFORMANCE TASK CALENDAR</p>
           <h1>수행평가, <em>한눈에</em><br />확인하세요.</h1>
-          <p className="hero-copy">{term} {className}의 수행평가 일정과 준비물을<br />놓치지 않도록 모아두었어요.</p>
+          <p className="hero-copy">{term && className ? `${term} ${className}의 ` : ""}수행평가 일정과 준비물을<br />놓치지 않도록 모아두었어요.</p>
           <a className="scroll-link" href="#schedule">이번 달 일정 보기 <span>↓</span></a>
         </div>
         <div className="hero-shape shape-one" />
@@ -214,8 +209,8 @@ export default function Home() {
       <section id="schedule" className="content-section">
         <div className="section-heading">
           <div>
-            <p className="eyebrow dark">{term.toUpperCase()}</p>
-            <h2>{className} 수행평가 일정</h2>
+            <p className="eyebrow dark">{term ? term.toUpperCase() : "SCHEDULE"}</p>
+            <h2>{className ? `${className} 수행평가 일정` : "수행평가 일정"}</h2>
           </div>
           <div className="next-chip"><span>다음 일정</span><strong>{nextAssessment?.date ?? "일정 없음"}</strong></div>
         </div>
@@ -290,7 +285,7 @@ function Dashboard({ isPresident, assessments, onAdd, onDelete, onEdit, calendar
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [dashboardDate, setDashboardDate] = useState(new Date(2026, 7, 1));
+  const [dashboardDate, setDashboardDate] = useState(new Date());
   const [newTerm, setNewTerm] = useState(""); const [newClass, setNewClass] = useState(""); const [addingTerm, setAddingTerm] = useState(false); const [addingClass, setAddingClass] = useState(false);
   const termClasses = classesByTerm[term] ?? [];
   const chooseTerm = (nextTerm: string) => onSettingsChange(terms, classesByTerm, nextTerm, (classesByTerm[nextTerm] ?? [])[0] ?? "");
