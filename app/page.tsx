@@ -191,7 +191,7 @@ export default function Home() {
         <nav className="nav" aria-label="주요 메뉴">
           <a className="brand" href="#schedule"><span>{(() => { const m = term.match(/(\d{4}).*?(\d)학기/); return m ? `${m[1].slice(2)}-${m[2]}` : term; })()}</span>{className}</a>
           <button className="admin-trigger" onClick={() => isAdmin ? setScreen("dashboard") : setIsLoginOpen(true)}>
-            {isAdmin ? "관리 대시보드" : "회장님 로그인"}
+            {isAdmin ? "관리 대시보드" : "관리자 로그인"}
           </button>
         </nav>
 
