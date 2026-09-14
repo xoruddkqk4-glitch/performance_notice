@@ -107,6 +107,19 @@ xoruddkqk4-glitch.github.io
 app/                 React 화면, Firebase 클라이언트 연결
 functions/           Firebase Cloud Functions
 firebase/            Firestore·Storage 보안 규칙
-pages/               GitHub Pages용 Vite 진입점
+gh-pages-src/        GitHub Pages용 Vite 진입점
 .github/workflows/   GitHub Pages 배포 워크플로
 ```
+
+## [2026-09-14 11:49] 업데이트 이력 (Commit ID: ea2ab1d)
+- **수정 내용**:
+  - 에이전트 실행 규칙 및 스킬 적용 (`.agents/`, `AGENTS.md`, `GEMINI.md`)
+  - GitHub 원격 저장소(`https://github.com/xoruddkqk4-glitch/performance_notice`) 연결 및 `main` 브랜치 동기화
+  - Windows 환경 변수 실행 호환을 위해 `cross-env` 추가 및 `package.json` 스크립트(`dev`, `build`, `start`) 수정
+  - pnpm 10 네이티브 빌드 허용 설정 (`pnpm-workspace.yaml`의 `allowBuilds` 승인)
+  - Next.js SSR 예약어 충돌 해결: `pages/` 폴더를 `gh-pages-src/`로 분리 및 `vite.pages.config.ts` 빌드 루트 경로 갱신
+  - `.gitignore`에 `*.tsbuildinfo` 무시 패턴 추가
+- **검증 결과**:
+  - `pnpm run build:pages` GitHub Pages 정적 배포 빌드 정상 통과 (`built in 603ms`)
+  - `pnpm run dev` 로컬 개발 서버 실행 및 `http://localhost:3000/` 접속 시 HTTP 200 OK 정상 렌더링 확인 완료
+
