@@ -45,6 +45,42 @@ const externalUrl = (value?: string) => {
 
 const startOfWeek = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate() - value.getDay());
 
+function parseAssessmentDates(dateStr: string, termStr: string): { start: Date; end: Date } | null {
+  const currentYear = new Date().getFullYear();
+  const termYearMatch = termStr.match(/\d{4}/);
+  const fallbackYear = termYearMatch ? Number(termYearMatch[0]) : currentYear;
+
+  const monthDayMatches = [...dateStr.matchAll(/(\d+)월\s*(\d+)일/g)];
+  if (monthDayMatches.length > 0) {
+    const startM = Number(monthDayMatches[0][1]) - 1;
+    const startD = Number(monthDayMatches[0][2]);
+    const startDate = new Date(fallbackYear, startM, startD, 0, 0, 0);
+
+    const endM = monthDayMatches[1] ? Number(monthDayMatches[1][1]) - 1 : startM;
+    const endD = monthDayMatches[1] ? Number(monthDayMatches[1][2]) : startD;
+    const endDate = new Date(fallbackYear, endM, endD, 23, 59, 59, 999);
+
+    return { start: startDate, end: endDate };
+  }
+
+  const isoMatches = [...dateStr.matchAll(/(\d{4})-(\d{2})-(\d{2})/g)];
+  if (isoMatches.length > 0) {
+    const y1 = Number(isoMatches[0][1]);
+    const m1 = Number(isoMatches[0][2]) - 1;
+    const d1 = Number(isoMatches[0][3]);
+    const startDate = new Date(y1, m1, d1, 0, 0, 0);
+
+    const y2 = isoMatches[1] ? Number(isoMatches[1][1]) : y1;
+    const m2 = isoMatches[1] ? Number(isoMatches[1][2]) - 1 : m1;
+    const d2 = isoMatches[1] ? Number(isoMatches[1][3]) : d1;
+    const endDate = new Date(y2, m2, d2, 23, 59, 59, 999);
+
+    return { start: startDate, end: endDate };
+  }
+
+  return null;
+}
+
 async function printSchedule(view: string) {
   const target = document.querySelector<HTMLElement>(".dashboard .public-calendar") ?? document.querySelector<HTMLElement>(".content-section");
   if (!target) return;
@@ -155,11 +191,26 @@ export default function Home() {
   }, []);
 
   const visibleAssessments = useMemo(() => assessments.filter((item) => item.term === term && item.className === className), [assessments, term, className]);
-  const nextAssessment = useMemo(() => visibleAssessments[0], [visibleAssessments]);
+  const nextAssessment = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+
+    const upcoming = visibleAssessments
+      .map((item) => {
+        const dates = parseAssessmentDates(item.date, term);
+        return dates ? { item, ...dates } : null;
+      })
+      .filter((entry): entry is { item: Assessment; start: Date; end: Date } => entry !== null)
+      .filter(({ end }) => end >= todayStart)
+      .sort((a, b) => a.start.getTime() - b.start.getTime() || a.end.getTime() - b.end.getTime());
+
+    return upcoming[0]?.item ?? null;
+  }, [visibleAssessments, term]);
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const username = String(data.get("username"));
     const password = String(data.get("password"));
     let canEdit = false;
@@ -175,7 +226,7 @@ export default function Home() {
       setIsLoginOpen(false);
       setScreen("dashboard");
       setLoginError("");
-      event.currentTarget.reset();
+      form?.reset();
       return;
     }
     setLoginError("아이디 또는 비밀번호를 다시 확인해 주세요.");
@@ -250,7 +301,7 @@ function PublicCalendar({ assessments, view, setView, date, setDate, onDelete, o
   const [selected, setSelected] = useState<Assessment | null>(null); const periods = ["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"];
   const eventsFor = (day: number) => assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === month + 1 && Number(m[2]) === day; });
   const eventsThisMonth = assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === month + 1; });
-  const move = (amount: number) => { if (view === "2주") setDate(new Date(year, month, date.getDate() + amount * 14)); else if (view === "주간") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "일간") setDate(new Date(year, month, date.getDate() + amount)); else setDate(new Date(year, month + amount, 1)); }; const calendarDays = view === "2주" ? 14 : view === "주간" ? 7 : count;
+  const move = (amount: number) => { if (view === "2주") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "주간") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "일간") setDate(new Date(year, month, date.getDate() + amount)); else setDate(new Date(year, month + amount, 1)); }; const calendarDays = view === "2주" ? 14 : view === "주간" ? 7 : count;
   const format = (value: Date) => `${value.getFullYear()}년 ${String(value.getMonth() + 1).padStart(2, "0")}월 ${String(value.getDate()).padStart(2, "0")}일`; const end = new Date(year, month, date.getDate() + (view === "2주" ? 13 : view === "주간" ? 6 : 0)); const heading = view === "일간" ? format(date) : view === "2주" || view === "주간" ? `${format(date)} - ${format(end)}` : `${year}년 ${month + 1}월`;
   return <><div className="view-tabs public-tabs">{(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>{calendarViewLabels[item]}</button>)}<span className="print-actions"><button onClick={() => printSchedule(view)}>PDF 출력</button></span></div><section className="calendar-panel public-calendar"><div className="calendar-title"><div className="calendar-nav"><button className="today-button" onClick={() => setDate(new Date())}>오늘</button><button onClick={() => move(-1)}>‹</button><button onClick={() => move(1)}>›</button></div><div><strong>{heading}</strong><span>{view === "과목 카드" ? "이번 달 수행평가" : "수행평가 일정"}</span></div></div>{view === "과목 카드" ? <div className="dashboard-cards">{eventsThisMonth.map((item, index) => <article className={`schedule-card ${item.color}`} key={item.id}><div className="card-top"><span>{String(index + 1).padStart(2, "0")}</span></div><h3>[{item.subject}]{item.title}({item.period})</h3><div className="card-bottom"><span>{item.date}</span><span className="card-resources">{item.templateLink && <a href={externalUrl(item.templateLink)} target="_blank" rel="noreferrer">양식 ↗</a>}{item.attachmentUrl && <a href={item.attachmentUrl} target="_blank" rel="noreferrer" download={item.attachmentName}>첨부 ↧</a>}{!item.templateLink && !item.attachmentUrl && <b>{item.period}</b>}</span></div>{onDelete && <div className="card-actions"><button onClick={() => onEdit?.(item)}>수정</button><button onClick={() => { if (window.confirm(`[${item.subject}] ${item.title} 일정을 삭제할까요?`)) onDelete(item.id); }}>삭제</button></div>}</article>)}{eventsThisMonth.length === 0 && <p className="empty-schedule">이번 달 등록된 수행평가가 없어요.</p>}</div> : view === "일간" ? <div className="period-grid">{periods.map((period) => <div className="period-row" key={period}><b>{period}</b><div>{eventsFor(date.getDate()).filter((event) => event.period === period).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div></div>)}</div> : <><div className="weekdays">{["일", "월", "화", "수", "목", "금", "토"].map((item) => <span key={item}>{item}</span>)}</div><div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>{Array.from({ length: calendarDays }, (_, index) => index + 1).map((day) => <div className={`day-cell ${year === now.getFullYear() && month === now.getMonth() && day === now.getDate() ? "today" : ""}`} key={day}><span>{day}</span>{eventsFor(day).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div>)}</div></>}</section>{selected && <div className="detail-backdrop" onClick={() => setSelected(null)}><article className={`detail-card schedule-card ${selected.color}`} onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setSelected(null)}>×</button><p className="eyebrow dark">SCHEDULE DETAIL</p><h3>[{selected.subject}]{selected.title}({selected.period})</h3><p>{selected.date} · {selected.kind}</p>{selected.templateLink && <a href={externalUrl(selected.templateLink)} target="_blank" rel="noreferrer">양식 링크 열기 ↗</a>}{selected.attachmentUrl && <a href={selected.attachmentUrl} target="_blank" rel="noreferrer" download={selected.attachmentName}>첨부 파일 다운로드 ↧</a>}</article></div>}</>;
 }
@@ -259,15 +310,16 @@ function FixedCalendar(props: { assessments: Assessment[]; view: "월간" | "2�
   const { assessments, view, setView, date, setDate, onDelete, onEdit } = props;
   const [selected, setSelected] = useState<Assessment | null>(null);
   if (view === "과목 카드") return <PublicCalendar {...props} />;
-  const step = view === "2주" ? 14 : view === "주간" ? 7 : view === "일간" ? 1 : 0;
+  const displayDays = view === "2주" ? 14 : view === "주간" ? 7 : view === "일간" ? 1 : 0;
+  const moveStep = view === "2주" ? 7 : view === "주간" ? 7 : view === "일간" ? 1 : 0;
   const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
   const start = view === "월간" ? startOfWeek(monthStart) : view === "일간" ? new Date(date) : startOfWeek(date);
   const monthDays = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-  const length = view === "월간" ? Math.ceil((monthStart.getDay() + monthDays) / 7) * 7 : step;
+  const length = view === "월간" ? Math.ceil((monthStart.getDay() + monthDays) / 7) * 7 : displayDays;
   const cells = Array.from({ length }, (_, index) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + index));
   const format = (value: Date) => `${value.getFullYear()}년 ${String(value.getMonth() + 1).padStart(2, "0")}월 ${String(value.getDate()).padStart(2, "0")}일`;
   const heading = view === "일간" ? format(start) : view === "월간" ? `${monthStart.getFullYear()}년 ${monthStart.getMonth() + 1}월` : `${format(start)} - ${format(cells[cells.length - 1])}`;
-  const move = (amount: number) => setDate(view === "월간" ? new Date(date.getFullYear(), date.getMonth() + amount, 1) : new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount * step));
+  const move = (amount: number) => setDate(view === "월간" ? new Date(date.getFullYear(), date.getMonth() + amount, 1) : new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount * moveStep));
   const eventsFor = (day: Date) => assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === day.getMonth() + 1 && Number(m[2]) === day.getDate(); });
   const now = new Date();
   return <><div className="view-tabs public-tabs">{(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>{calendarViewLabels[item]}</button>)}<span className="print-actions"><button onClick={() => printSchedule(view)}>PDF 출력</button></span></div><section className="calendar-panel public-calendar"><div className="calendar-title"><div className="calendar-nav"><button className="today-button" onClick={() => setDate(new Date())}>오늘</button><button onClick={() => move(-1)}>‹</button><button onClick={() => move(1)}>›</button></div><div><strong>{heading}</strong><span>수행평가 일정</span></div></div>{view === "일간" ? <div className="period-grid">{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"].map((period) => <div className="period-row" key={period}><b>{period}</b><div>{eventsFor(start).filter((event) => event.period.startsWith(period)).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div></div>)}</div> : <><div className="weekdays">{["일", "월", "화", "수", "목", "금", "토"].map((item) => <span key={item}>{item}</span>)}</div><div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>{cells.map((day) => <div className={`day-cell ${day.toDateString() === now.toDateString() ? "today" : ""} ${view === "월간" && day.getMonth() !== date.getMonth() ? "outside-month" : ""}`} key={day.toISOString()}><span>{day.getDate()}</span>{eventsFor(day).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div>)}</div></>}</section>{selected && <div className="detail-backdrop" onClick={() => setSelected(null)}><article className={`detail-card schedule-card ${selected.color}`} onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setSelected(null)}>×</button><p className="eyebrow dark">SCHEDULE DETAIL</p><h3>[{selected.subject}]{selected.title}({selected.period})</h3><p>{selected.date} · {selected.kind}</p>{selected.templateLink && <a href={externalUrl(selected.templateLink)} target="_blank" rel="noreferrer">양식 링크 열기 ↗</a>}{selected.attachmentUrl && <a href={selected.attachmentUrl} target="_blank" rel="noreferrer" download={selected.attachmentName}>첨부 파일 다운로드 ↧</a>}</article></div>}</>;
