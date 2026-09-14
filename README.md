@@ -123,3 +123,14 @@ gh-pages-src/        GitHub Pages용 Vite 진입점
   - `pnpm run build:pages` GitHub Pages 정적 배포 빌드 정상 통과 (`built in 603ms`)
   - `pnpm run dev` 로컬 개발 서버 실행 및 `http://localhost:3000/` 접속 시 HTTP 200 OK 정상 렌더링 확인 완료
 
+## [2026-09-14 11:59] 업데이트 이력 (Commit ID: e3c8920)
+- **수정 내용**:
+  - 오늘 기준 다가오는 "다음 일정" 동적 계산 반영 (`app/page.tsx`)
+  - 2주(2 Weeks) 뷰에서 이전/다음 이동 시 2주가 아닌 1주(7일) 단위로 이동하도록 개선 (학생 및 관리자 화면 공통 적용)
+  - 관리자 로그인 시 `Cannot read properties of null (reading 'reset')` 비동기 이벤트 참조 에러 수정
+  - 브라우저 탭 타이틀 및 설명의 학급명 하드코딩 제거 및 `수행평가 일정`으로 단일화 (`app/layout.tsx`)
+- **검증 결과**:
+  - `pnpm run build:pages` GitHub Pages 정적 배포 빌드 정상 통과 (`built in 1.18s`)
+  - 로컬 개발 서버 및 브라우저 정상 렌더링 검증 완료
+
+
