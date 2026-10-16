@@ -8,7 +8,16 @@ import { httpsCallable } from "firebase/functions";
 import { ADMIN_EMAIL, ADMIN_UID, cloudFunctions, editorProvisioningAuth, firebaseAuth, storage } from "./firebase";
 import { firestore } from "./firebase";
 
-type Assessment = {
+export type AttachmentItem = {
+  id?: string;
+  name: string;
+  url: string;
+  path?: string;
+  size?: number;
+  type?: string;
+};
+
+export type Assessment = {
   id: number;
   subject: string;
   title: string;
@@ -20,6 +29,7 @@ type Assessment = {
   term?: string;
   className?: string;
   supplies?: string;
+  attachments?: AttachmentItem[];
   attachmentName?: string;
   attachmentUrl?: string;
   attachmentPath?: string;
@@ -28,6 +38,40 @@ type Assessment = {
 type Editor = { id: number; uid: string; name: string; username: string; term?: string; className: string };
 
 const initialAssessments: Assessment[] = [];
+
+const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB
+
+export function formatFileSize(bytes?: number): string {
+  if (bytes === undefined || bytes === null || isNaN(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function getAssessmentAttachments(item: Assessment): AttachmentItem[] {
+  if (item.attachments && Array.isArray(item.attachments) && item.attachments.length > 0) {
+    return item.attachments;
+  }
+  if (item.attachmentUrl) {
+    return [{
+      name: item.attachmentName || "첨부파일",
+      url: item.attachmentUrl,
+      path: item.attachmentPath,
+    }];
+  }
+  return [];
+}
+
+export function isImageFile(fileName: string, type?: string): boolean {
+  if (type && type.startsWith("image/")) return true;
+  return /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(fileName);
+}
+
+export function isPdfFile(fileName: string, type?: string): boolean {
+  if (type === "application/pdf") return true;
+  return /\.pdf$/i.test(fileName);
+}
 
 const calendarViewLabels: Record<"월간" | "2주" | "주간" | "일간" | "과목 카드", string> = {
   "과목 카드": "List",
@@ -94,6 +138,7 @@ async function printSchedule(view: string) {
   const className = selectedClass.replace(/\s+/g, "_");
   const viewName = view === "과목 카드" ? "카드" : view;
   const shareLink = `${window.location.origin}${window.location.pathname}?class=${encodeURIComponent(selectedClass)}&term=${encodeURIComponent(selectedTerm)}`;
+  // @ts-expect-error qrcode missing types in current setup
   const { toDataURL } = await import("qrcode");
   const qrDataUrl = await toDataURL(shareLink, { width: 240, margin: 0, errorCorrectionLevel: "M" });
   const exportTarget = target.cloneNode(true) as HTMLElement;
@@ -232,8 +277,21 @@ export default function Home() {
     setLoginError("아이디 또는 비밀번호를 다시 확인해 주세요.");
   }
 
+  const deleteAssessment = async (id: number) => {
+    const target = assessments.find((item) => item.id === id);
+    if (target) {
+      const files = getAssessmentAttachments(target);
+      for (const f of files) {
+        if (f.path) {
+          void deleteObject(ref(storage, f.path)).catch(() => undefined);
+        }
+      }
+    }
+    await persistAssessments(assessments.filter((item) => item.id !== id));
+  };
+
   if (screen === "dashboard" && isAdmin) {
-    return <Dashboard isPresident={isPresident} assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={(id) => persistAssessments(assessments.filter((item) => item.id !== id))} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} terms={terms} classesByTerm={classesByTerm} onSettingsChange={persistClassSettings} editors={editors.filter((editor) => editor.className === className && (!editor.term || editor.term === term))} onRevokeEditor={(uid) => { void deleteEditorAccount(uid); }} onBack={() => setScreen("notice")} onLogout={() => { void signOut(firebaseAuth); setIsAdmin(false); setIsPresident(false); setScreen("notice"); }} />;
+    return <Dashboard isPresident={isPresident} assessments={visibleAssessments} onAdd={(item) => persistAssessments([...assessments, { ...item, term, className }])} onDelete={deleteAssessment} onEdit={(updated) => persistAssessments(assessments.map((item) => item.id === updated.id ? { ...updated, term, className } : item))} calendarView={calendarView} setCalendarView={setCalendarView} term={term} setTerm={setTerm} className={className} setClassName={setClassName} terms={terms} classesByTerm={classesByTerm} onSettingsChange={persistClassSettings} editors={editors.filter((editor) => editor.className === className && (!editor.term || editor.term === term))} onRevokeEditor={(uid) => { void deleteEditorAccount(uid); }} onBack={() => setScreen("notice")} onLogout={() => { void signOut(firebaseAuth); setIsAdmin(false); setIsPresident(false); setScreen("notice"); }} />;
   }
 
   return (
@@ -296,14 +354,235 @@ export default function Home() {
   );
 }
 
+function AssessmentDetailModal({ assessment, onClose }: { assessment: Assessment; onClose: () => void }) {
+  const [zoomImage, setZoomImage] = useState<{ url: string; name: string } | null>(null);
+  const attachments = getAssessmentAttachments(assessment);
+
+  return (
+    <>
+      <div className="detail-backdrop" onClick={onClose} role="presentation">
+        <article className={`detail-card schedule-card ${assessment.color}`} onClick={(event) => event.stopPropagation()}>
+          <button className="close" onClick={onClose} aria-label="닫기">×</button>
+          <p className="eyebrow dark">SCHEDULE DETAIL</p>
+          <h3>[{assessment.subject}]{assessment.title}({assessment.period})</h3>
+          <p>{assessment.date} · {assessment.kind}</p>
+          {assessment.supplies && <p className="detail-supplies"><strong>준비물:</strong> {assessment.supplies}</p>}
+          {assessment.templateLink && (
+            <div className="detail-link-row">
+              <a href={externalUrl(assessment.templateLink)} target="_blank" rel="noreferrer" className="template-link-btn">
+                양식 링크 열기 ↗
+              </a>
+            </div>
+          )}
+
+          {attachments.length > 0 && (
+            <div className="detail-attachments-section">
+              <strong className="attachments-title">첨부 파일 ({attachments.length})</strong>
+              <ul className="attachment-list">
+                {attachments.map((file, idx) => {
+                  const isImg = isImageFile(file.name, file.type);
+                  const isPdf = isPdfFile(file.name, file.type);
+                  return (
+                    <li key={file.path || file.url || idx} className="attachment-item">
+                      <div className="attachment-info">
+                        {isImg ? (
+                          <img
+                            src={file.url}
+                            alt={file.name}
+                            className="attachment-thumb"
+                            onClick={() => setZoomImage({ url: file.url, name: file.name })}
+                            title="클릭하여 확대보기"
+                          />
+                        ) : isPdf ? (
+                          <span className="file-badge pdf-badge">PDF</span>
+                        ) : (
+                          <span className="file-badge file-generic-badge">FILE</span>
+                        )}
+                        <span className="attachment-name" title={file.name}>
+                          {file.name}
+                          {file.size ? <small className="file-size"> ({formatFileSize(file.size)})</small> : null}
+                        </span>
+                      </div>
+                      <div className="attachment-actions">
+                        {isImg && (
+                          <button
+                            type="button"
+                            className="btn-preview-link"
+                            onClick={() => setZoomImage({ url: file.url, name: file.name })}
+                          >
+                            보기 🔍
+                          </button>
+                        )}
+                        {isPdf && (
+                          <a
+                            href={file.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="btn-preview-link"
+                          >
+                            미리보기 ↗
+                          </a>
+                        )}
+                        <a
+                          href={file.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          download={file.name}
+                          className="btn-download-link"
+                        >
+                          다운로드 ↧
+                        </a>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </article>
+      </div>
+
+      {zoomImage && (
+        <div className="image-zoom-backdrop" onClick={() => setZoomImage(null)} role="presentation">
+          <div className="image-zoom-card" onClick={(event) => event.stopPropagation()}>
+            <button className="close zoom-close" onClick={() => setZoomImage(null)} aria-label="닫기">×</button>
+            <div className="image-zoom-header">
+              <span className="image-zoom-title">{zoomImage.name}</span>
+              <a href={zoomImage.url} target="_blank" rel="noreferrer" download={zoomImage.name} className="zoom-download-btn">
+                다운로드 ↧
+              </a>
+            </div>
+            <div className="image-zoom-body">
+              <img src={zoomImage.url} alt={zoomImage.name} />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function PublicCalendar({ assessments, view, setView, date, setDate, onDelete, onEdit }: { assessments: Assessment[]; view: "월간" | "2주" | "주간" | "일간" | "과목 카드"; setView: (view: "월간" | "2주" | "주간" | "일간" | "과목 카드") => void; date: Date; setDate: (date: Date) => void; onDelete?: (id: number) => void; onEdit?: (item: Assessment) => void }) {
   const year = date.getFullYear(), month = date.getMonth(), count = new Date(year, month + 1, 0).getDate(), now = new Date();
-  const [selected, setSelected] = useState<Assessment | null>(null); const periods = ["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"];
+  const [selected, setSelected] = useState<Assessment | null>(null);
+  const periods = ["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"];
   const eventsFor = (day: number) => assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === month + 1 && Number(m[2]) === day; });
   const eventsThisMonth = assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === month + 1; });
-  const move = (amount: number) => { if (view === "2주") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "주간") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "일간") setDate(new Date(year, month, date.getDate() + amount)); else setDate(new Date(year, month + amount, 1)); }; const calendarDays = view === "2주" ? 14 : view === "주간" ? 7 : count;
-  const format = (value: Date) => `${value.getFullYear()}년 ${String(value.getMonth() + 1).padStart(2, "0")}월 ${String(value.getDate()).padStart(2, "0")}일`; const end = new Date(year, month, date.getDate() + (view === "2주" ? 13 : view === "주간" ? 6 : 0)); const heading = view === "일간" ? format(date) : view === "2주" || view === "주간" ? `${format(date)} - ${format(end)}` : `${year}년 ${month + 1}월`;
-  return <><div className="view-tabs public-tabs">{(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>{calendarViewLabels[item]}</button>)}<span className="print-actions"><button onClick={() => printSchedule(view)}>PDF 출력</button></span></div><section className="calendar-panel public-calendar"><div className="calendar-title"><div className="calendar-nav"><button className="today-button" onClick={() => setDate(new Date())}>오늘</button><button onClick={() => move(-1)}>‹</button><button onClick={() => move(1)}>›</button></div><div><strong>{heading}</strong><span>{view === "과목 카드" ? "이번 달 수행평가" : "수행평가 일정"}</span></div></div>{view === "과목 카드" ? <div className="dashboard-cards">{eventsThisMonth.map((item, index) => <article className={`schedule-card ${item.color}`} key={item.id}><div className="card-top"><span>{String(index + 1).padStart(2, "0")}</span></div><h3>[{item.subject}]{item.title}({item.period})</h3><div className="card-bottom"><span>{item.date}</span><span className="card-resources">{item.templateLink && <a href={externalUrl(item.templateLink)} target="_blank" rel="noreferrer">양식 ↗</a>}{item.attachmentUrl && <a href={item.attachmentUrl} target="_blank" rel="noreferrer" download={item.attachmentName}>첨부 ↧</a>}{!item.templateLink && !item.attachmentUrl && <b>{item.period}</b>}</span></div>{onDelete && <div className="card-actions"><button onClick={() => onEdit?.(item)}>수정</button><button onClick={() => { if (window.confirm(`[${item.subject}] ${item.title} 일정을 삭제할까요?`)) onDelete(item.id); }}>삭제</button></div>}</article>)}{eventsThisMonth.length === 0 && <p className="empty-schedule">이번 달 등록된 수행평가가 없어요.</p>}</div> : view === "일간" ? <div className="period-grid">{periods.map((period) => <div className="period-row" key={period}><b>{period}</b><div>{eventsFor(date.getDate()).filter((event) => event.period === period).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div></div>)}</div> : <><div className="weekdays">{["일", "월", "화", "수", "목", "금", "토"].map((item) => <span key={item}>{item}</span>)}</div><div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>{Array.from({ length: calendarDays }, (_, index) => index + 1).map((day) => <div className={`day-cell ${year === now.getFullYear() && month === now.getMonth() && day === now.getDate() ? "today" : ""}`} key={day}><span>{day}</span>{eventsFor(day).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div>)}</div></>}</section>{selected && <div className="detail-backdrop" onClick={() => setSelected(null)}><article className={`detail-card schedule-card ${selected.color}`} onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setSelected(null)}>×</button><p className="eyebrow dark">SCHEDULE DETAIL</p><h3>[{selected.subject}]{selected.title}({selected.period})</h3><p>{selected.date} · {selected.kind}</p>{selected.templateLink && <a href={externalUrl(selected.templateLink)} target="_blank" rel="noreferrer">양식 링크 열기 ↗</a>}{selected.attachmentUrl && <a href={selected.attachmentUrl} target="_blank" rel="noreferrer" download={selected.attachmentName}>첨부 파일 다운로드 ↧</a>}</article></div>}</>;
+  const move = (amount: number) => { if (view === "2주") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "주간") setDate(new Date(year, month, date.getDate() + amount * 7)); else if (view === "일간") setDate(new Date(year, month, date.getDate() + amount)); else setDate(new Date(year, month + amount, 1)); };
+  const calendarDays = view === "2주" ? 14 : view === "주간" ? 7 : count;
+  const format = (value: Date) => `${value.getFullYear()}년 ${String(value.getMonth() + 1).padStart(2, "0")}월 ${String(value.getDate()).padStart(2, "0")}일`;
+  const end = new Date(year, month, date.getDate() + (view === "2주" ? 13 : view === "주간" ? 6 : 0));
+  const heading = view === "일간" ? format(date) : view === "2주" || view === "주간" ? `${format(date)} - ${format(end)}` : `${year}년 ${month + 1}월`;
+
+  return (
+    <>
+      <div className="view-tabs public-tabs">
+        {(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => (
+          <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>
+            {calendarViewLabels[item]}
+          </button>
+        ))}
+        <span className="print-actions">
+          <button onClick={() => printSchedule(view)}>PDF 출력</button>
+        </span>
+      </div>
+
+      <section className="calendar-panel public-calendar">
+        <div className="calendar-title">
+          <div className="calendar-nav">
+            <button className="today-button" onClick={() => setDate(new Date())}>오늘</button>
+            <button onClick={() => move(-1)}>‹</button>
+            <button onClick={() => move(1)}>›</button>
+          </div>
+          <div>
+            <strong>{heading}</strong>
+            <span>{view === "과목 카드" ? "이번 달 수행평가" : "수행평가 일정"}</span>
+          </div>
+        </div>
+
+        {view === "과목 카드" ? (
+          <div className="dashboard-cards">
+            {eventsThisMonth.map((item, index) => {
+              const atts = getAssessmentAttachments(item);
+              return (
+                <article className={`schedule-card ${item.color}`} key={item.id}>
+                  <div className="card-top">
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                  </div>
+                  <h3 onClick={() => setSelected(item)} style={{ cursor: "pointer" }}>
+                    [{item.subject}]{item.title}({item.period})
+                  </h3>
+                  <div className="card-bottom">
+                    <span>{item.date}</span>
+                    <span className="card-resources">
+                      {item.templateLink && <a href={externalUrl(item.templateLink)} target="_blank" rel="noreferrer">양식 ↗</a>}
+                      {atts.length === 1 && (
+                        <a href={atts[0].url} target="_blank" rel="noreferrer" download={atts[0].name}>
+                          첨부 ↧
+                        </a>
+                      )}
+                      {atts.length > 1 && (
+                        <button type="button" className="resource-chip-btn" onClick={() => setSelected(item)}>
+                          첨부 {atts.length}건 ↧
+                        </button>
+                      )}
+                      {!item.templateLink && atts.length === 0 && <b>{item.period}</b>}
+                    </span>
+                  </div>
+                  {onDelete && (
+                    <div className="card-actions">
+                      <button onClick={() => onEdit?.(item)}>수정</button>
+                      <button onClick={() => { if (window.confirm(`[${item.subject}] ${item.title} 일정을 삭제할까요?`)) onDelete(item.id); }}>
+                        삭제
+                      </button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            {eventsThisMonth.length === 0 && <p className="empty-schedule">이번 달 등록된 수행평가가 없어요.</p>}
+          </div>
+        ) : view === "일간" ? (
+          <div className="period-grid">
+            {periods.map((period) => (
+              <div className="period-row" key={period}>
+                <b>{period}</b>
+                <div>
+                  {eventsFor(date.getDate()).filter((event) => event.period === period).map((event) => (
+                    <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>
+                      [{event.subject}]{event.title}({event.period})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="weekdays">
+              {["일", "월", "화", "수", "목", "금", "토"].map((item) => (
+                <span key={item}>{item}</span>
+              ))}
+            </div>
+            <div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>
+              {Array.from({ length: calendarDays }, (_, index) => index + 1).map((day) => (
+                <div className={`day-cell ${year === now.getFullYear() && month === now.getMonth() && day === now.getDate() ? "today" : ""}`} key={day}>
+                  <span>{day}</span>
+                  {eventsFor(day).map((event) => (
+                    <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>
+                      [{event.subject}]{event.title}({event.period})
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      {selected && <AssessmentDetailModal assessment={selected} onClose={() => setSelected(null)} />}
+    </>
+  );
 }
 
 function FixedCalendar(props: { assessments: Assessment[]; view: "월간" | "2주" | "주간" | "일간" | "과목 카드"; setView: (view: "월간" | "2주" | "주간" | "일간" | "과목 카드") => void; date: Date; setDate: (date: Date) => void; onDelete?: (id: number) => void; onEdit?: (item: Assessment) => void }) {
@@ -322,7 +601,74 @@ function FixedCalendar(props: { assessments: Assessment[]; view: "월간" | "2�
   const move = (amount: number) => setDate(view === "월간" ? new Date(date.getFullYear(), date.getMonth() + amount, 1) : new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount * moveStep));
   const eventsFor = (day: Date) => assessments.filter((item) => { const m = item.date.match(/(\d+)월\s*(\d+)일/); return m && Number(m[1]) === day.getMonth() + 1 && Number(m[2]) === day.getDate(); });
   const now = new Date();
-  return <><div className="view-tabs public-tabs">{(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>{calendarViewLabels[item]}</button>)}<span className="print-actions"><button onClick={() => printSchedule(view)}>PDF 출력</button></span></div><section className="calendar-panel public-calendar"><div className="calendar-title"><div className="calendar-nav"><button className="today-button" onClick={() => setDate(new Date())}>오늘</button><button onClick={() => move(-1)}>‹</button><button onClick={() => move(1)}>›</button></div><div><strong>{heading}</strong><span>수행평가 일정</span></div></div>{view === "일간" ? <div className="period-grid">{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"].map((period) => <div className="period-row" key={period}><b>{period}</b><div>{eventsFor(start).filter((event) => event.period.startsWith(period)).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div></div>)}</div> : <><div className="weekdays">{["일", "월", "화", "수", "목", "금", "토"].map((item) => <span key={item}>{item}</span>)}</div><div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>{cells.map((day) => <div className={`day-cell ${day.toDateString() === now.toDateString() ? "today" : ""} ${view === "월간" && day.getMonth() !== date.getMonth() ? "outside-month" : ""}`} key={day.toISOString()}><span>{day.getDate()}</span>{eventsFor(day).map((event) => <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>[{event.subject}]{event.title}({event.period})</button>)}</div>)}</div></>}</section>{selected && <div className="detail-backdrop" onClick={() => setSelected(null)}><article className={`detail-card schedule-card ${selected.color}`} onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setSelected(null)}>×</button><p className="eyebrow dark">SCHEDULE DETAIL</p><h3>[{selected.subject}]{selected.title}({selected.period})</h3><p>{selected.date} · {selected.kind}</p>{selected.templateLink && <a href={externalUrl(selected.templateLink)} target="_blank" rel="noreferrer">양식 링크 열기 ↗</a>}{selected.attachmentUrl && <a href={selected.attachmentUrl} target="_blank" rel="noreferrer" download={selected.attachmentName}>첨부 파일 다운로드 ↧</a>}</article></div>}</>;
+
+  return (
+    <>
+      <div className="view-tabs public-tabs">
+        {(["과목 카드", "월간", "2주", "주간", "일간"] as const).map((item) => (
+          <button key={item} className={view === item ? "selected" : ""} onClick={() => setView(item)}>
+            {calendarViewLabels[item]}
+          </button>
+        ))}
+        <span className="print-actions">
+          <button onClick={() => printSchedule(view)}>PDF 출력</button>
+        </span>
+      </div>
+
+      <section className="calendar-panel public-calendar">
+        <div className="calendar-title">
+          <div className="calendar-nav">
+            <button className="today-button" onClick={() => setDate(new Date())}>오늘</button>
+            <button onClick={() => move(-1)}>‹</button>
+            <button onClick={() => move(1)}>›</button>
+          </div>
+          <div>
+            <strong>{heading}</strong>
+            <span>수행평가 일정</span>
+          </div>
+        </div>
+
+        {view === "일간" ? (
+          <div className="period-grid">
+            {["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시"].map((period) => (
+              <div className="period-row" key={period}>
+                <b>{period}</b>
+                <div>
+                  {eventsFor(start).filter((event) => event.period.startsWith(period)).map((event) => (
+                    <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>
+                      [{event.subject}]{event.title}({event.period})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="weekdays">
+              {["일", "월", "화", "수", "목", "금", "토"].map((item) => (
+                <span key={item}>{item}</span>
+              ))}
+            </div>
+            <div className={`month-grid ${view !== "월간" ? "compact-grid" : ""}`}>
+              {cells.map((day) => (
+                <div className={`day-cell ${day.toDateString() === now.toDateString() ? "today" : ""} ${view === "월간" && day.getMonth() !== date.getMonth() ? "outside-month" : ""}`} key={day.toISOString()}>
+                  <span>{day.getDate()}</span>
+                  {eventsFor(day).map((event) => (
+                    <button className={`event-dot ${event.color}`} key={event.id} onClick={() => setSelected(event)}>
+                      [{event.subject}]{event.title}({event.period})
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      {selected && <AssessmentDetailModal assessment={selected} onClose={() => setSelected(null)} />}
+    </>
+  );
 }
 
 function Dashboard({ isPresident, assessments, onAdd, onDelete, onEdit, calendarView, setCalendarView, term, setTerm, className, setClassName, terms, classesByTerm, onSettingsChange, editors, onRevokeEditor, onBack, onLogout }: {
@@ -333,7 +679,12 @@ function Dashboard({ isPresident, assessments, onAdd, onDelete, onEdit, calendar
   const [invite, setInvite] = useState({ name: "", username: "", password: "" });
   const [entry, setEntry] = useState({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "", supplies: "", templateLink: "" });
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [attachment, setAttachment] = useState<File | null>(null);
+
+  // 다중 첨부파일 상태
+  const [newFiles, setNewFiles] = useState<File[]>([]);
+  const [existingFiles, setExistingFiles] = useState<AttachmentItem[]>([]);
+  const [pendingDeletePaths, setPendingDeletePaths] = useState<string[]>([]);
+
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -346,10 +697,155 @@ function Dashboard({ isPresident, assessments, onAdd, onDelete, onEdit, calendar
   const addClass = (nextClass: string) => onSettingsChange(terms, { ...classesByTerm, [term]: [...termClasses, nextClass] }, term, nextClass);
   const removeTerm = (item: string) => { const nextTerms = terms.filter((value) => value !== item); const { [item]: _, ...nextClasses } = classesByTerm; const nextTerm = term === item ? nextTerms[0] : term; onSettingsChange(nextTerms, nextClasses, nextTerm, term === item ? (nextClasses[nextTerm] ?? [])[0] ?? "" : className); };
   const removeClass = (item: string) => { const nextClasses = termClasses.filter((value) => value !== item); onSettingsChange(terms, { ...classesByTerm, [term]: nextClasses }, term, className === item ? nextClasses[0] ?? "" : className); };
-  async function inviteEditor(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!invite.name || !invite.username || !invite.password || invite.password.length < 6) return; try { const credential = await createUserWithEmailAndPassword(editorProvisioningAuth, `${invite.username}@performance-notice.local`, invite.password); const editor = { id: Date.now(), uid: credential.user.uid, name: invite.name, username: invite.username, term, className }; await setDoc(doc(firestore, "editors", credential.user.uid), { ...editor, active: true }); await signOut(editorProvisioningAuth); setInvite({ name: "", username: "", password: "" }); } catch { window.alert("입력 권한 계정을 만들지 못했어요. 아이디가 이미 사용 중인지와 비밀번호를 확인해 주세요."); } }
-  const resetEntry = () => { setEntry({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "", supplies: "", templateLink: "" }); setAttachment(null); setEditingId(null); setUploadError(""); };
-  async function addEntry(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!entry.subject || !entry.title || !entry.date || !entry.period || isUploading) return; const existing = editingId ? assessments.find((item) => item.id === editingId) : undefined; const toLabel = (value: string) => { const [, m, d] = value.match(/\d{4}-(\d{2})-(\d{2})/) ?? []; return `${Number(m)}월 ${Number(d)}일`; }; const color = ({ "국어":"pink", "영어":"purple", "수학":"blue", "사회":"orange", "과학":"green" } as Record<string, Assessment["color"]>)[entry.subject] ?? "gray"; setUploadError(""); setIsUploading(true); let attachmentName = existing?.attachmentName; let attachmentUrl = existing?.attachmentUrl; let attachmentPath = existing?.attachmentPath; if (attachment) { try { const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_"); const nextPath = `attachments/${Date.now()}-${safeName}`; const fileRef = ref(storage, nextPath); await uploadBytes(fileRef, attachment, { contentType: attachment.type || "application/octet-stream" }); attachmentUrl = await getDownloadURL(fileRef); attachmentName = attachment.name; attachmentPath = nextPath; if (existing?.attachmentPath) void deleteObject(ref(storage, existing.attachmentPath)).catch(() => undefined); } catch { window.alert("첨부 파일은 업로드하지 못했지만 일정은 저장됩니다. 나중에 수정 화면에서 파일을 다시 첨부해 주세요."); } } const updated = { id: editingId ?? Date.now(), subject: entry.subject, title: entry.title, date: entry.endDate ? `${toLabel(entry.date)} ~ ${toLabel(entry.endDate)}` : toLabel(entry.date), period: entry.endPeriod ? `${entry.period}~${entry.endPeriod}` : entry.period, kind: entry.kind, supplies: entry.supplies, templateLink: externalUrl(entry.templateLink), attachmentName, attachmentUrl, attachmentPath, color }; if (editingId) onEdit(updated); else onAdd(updated); resetEntry(); setIsUploading(false); }
-  function startEditing(item: Assessment) { const year = term.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear()); const dates = [...item.date.matchAll(/(\d+)월\s*(\d+)일/g)].map((match) => `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`); const [period, endPeriod = ""] = item.period.split("~"); setEntry({ subject: item.subject, title: item.title, date: dates[0] ?? "", endDate: dates[1] ?? "", period, endPeriod, kind: item.kind, supplies: item.supplies ?? "", templateLink: item.templateLink ?? "" }); setAttachment(null); setUploadError(""); setEditingId(item.id); document.getElementById("schedule-entry")?.scrollIntoView({ behavior: "smooth", block: "center" }); }
+
+  async function inviteEditor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!invite.name || !invite.username || !invite.password || invite.password.length < 6) return;
+    try {
+      const credential = await createUserWithEmailAndPassword(editorProvisioningAuth, `${invite.username}@performance-notice.local`, invite.password);
+      const editor = { id: Date.now(), uid: credential.user.uid, name: invite.name, username: invite.username, term, className };
+      await setDoc(doc(firestore, "editors", credential.user.uid), { ...editor, active: true });
+      await signOut(editorProvisioningAuth);
+      setInvite({ name: "", username: "", password: "" });
+    } catch {
+      window.alert("입력 권한 계정을 만들지 못했어요. 아이디가 이미 사용 중인지와 비밀번호를 확인해 주세요.");
+    }
+  }
+
+  const resetEntry = () => {
+    setEntry({ subject: "", title: "", date: "", endDate: "", period: "", endPeriod: "", kind: "", supplies: "", templateLink: "" });
+    setNewFiles([]);
+    setExistingFiles([]);
+    setPendingDeletePaths([]);
+    setEditingId(null);
+    setUploadError("");
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    setUploadError("");
+
+    const oversized = files.filter((f) => f.size > MAX_FILE_SIZE);
+    if (oversized.length > 0) {
+      setUploadError(`파일당 최대 15MB까지 업로드할 수 있습니다. (초과 파일: ${oversized.map((f) => f.name).join(", ")})`);
+      e.target.value = "";
+      return;
+    }
+
+    const currentTotal = newFiles.reduce((acc, f) => acc + f.size, 0);
+    const addedTotal = files.reduce((acc, f) => acc + f.size, 0);
+    if (currentTotal + addedTotal > MAX_TOTAL_SIZE) {
+      setUploadError(`첨부파일 총합은 50MB를 초과할 수 없습니다. (현재 선택 합계: ${formatFileSize(currentTotal + addedTotal)})`);
+      e.target.value = "";
+      return;
+    }
+
+    setNewFiles((prev) => {
+      const names = new Set(prev.map((f) => f.name));
+      const filtered = files.filter((f) => !names.has(f.name));
+      return [...prev, ...filtered];
+    });
+    e.target.value = "";
+  };
+
+  const removeNewFile = (index: number) => {
+    setNewFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const removeExistingFile = (fileToRemove: AttachmentItem) => {
+    if (window.confirm(`'${fileToRemove.name}' 첨부파일을 삭제할까요?`)) {
+      setExistingFiles((prev) => prev.filter((f) => (f.path ? f.path !== fileToRemove.path : f.url !== fileToRemove.url)));
+      if (fileToRemove.path) {
+        setPendingDeletePaths((prev) => [...prev, fileToRemove.path!]);
+      }
+    }
+  };
+
+  async function addEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!entry.subject || !entry.title || !entry.date || !entry.period || isUploading) return;
+    const toLabel = (value: string) => {
+      const [, m, d] = value.match(/\d{4}-(\d{2})-(\d{2})/) ?? [];
+      return `${Number(m)}월 ${Number(d)}일`;
+    };
+    const color = ({ "국어":"pink", "영어":"purple", "수학":"blue", "사회":"orange", "과학":"green" } as Record<string, Assessment["color"]>)[entry.subject] ?? "gray";
+    setUploadError("");
+    setIsUploading(true);
+
+    if (pendingDeletePaths.length > 0) {
+      await Promise.all(pendingDeletePaths.map((p) => deleteObject(ref(storage, p)).catch(() => undefined)));
+    }
+
+    const uploadedAttachments: AttachmentItem[] = [];
+    if (newFiles.length > 0) {
+      try {
+        for (const file of newFiles) {
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const nextPath = `attachments/${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${safeName}`;
+          const fileRef = ref(storage, nextPath);
+          await uploadBytes(fileRef, file, { contentType: file.type || "application/octet-stream" });
+          const url = await getDownloadURL(fileRef);
+          uploadedAttachments.push({
+            name: file.name,
+            url,
+            path: nextPath,
+            size: file.size,
+            type: file.type,
+          });
+        }
+      } catch {
+        window.alert("일부 첨부 파일은 업로드하지 못했지만 일정은 저장됩니다. 나중에 수정 화면에서 다시 시도해 주세요.");
+      }
+    }
+
+    const finalAttachments: AttachmentItem[] = [...existingFiles, ...uploadedAttachments];
+
+    const updated: Assessment = {
+      id: editingId ?? Date.now(),
+      subject: entry.subject,
+      title: entry.title,
+      date: entry.endDate ? `${toLabel(entry.date)} ~ ${toLabel(entry.endDate)}` : toLabel(entry.date),
+      period: entry.endPeriod ? `${entry.period}~${entry.endPeriod}` : entry.period,
+      kind: entry.kind,
+      supplies: entry.supplies,
+      templateLink: externalUrl(entry.templateLink),
+      attachments: finalAttachments,
+      attachmentName: finalAttachments[0]?.name,
+      attachmentUrl: finalAttachments[0]?.url,
+      attachmentPath: finalAttachments[0]?.path,
+      color,
+    };
+
+    if (editingId) onEdit(updated);
+    else onAdd(updated);
+    resetEntry();
+    setIsUploading(false);
+  }
+
+  function startEditing(item: Assessment) {
+    const year = term.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear());
+    const dates = [...item.date.matchAll(/(\d+)월\s*(\d+)일/g)].map((match) => `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`);
+    const [period, endPeriod = ""] = item.period.split("~");
+    setEntry({
+      subject: item.subject,
+      title: item.title,
+      date: dates[0] ?? "",
+      endDate: dates[1] ?? "",
+      period,
+      endPeriod,
+      kind: item.kind,
+      supplies: item.supplies ?? "",
+      templateLink: item.templateLink ?? "",
+    });
+    setNewFiles([]);
+    setExistingFiles(getAssessmentAttachments(item));
+    setPendingDeletePaths([]);
+    setUploadError("");
+    setEditingId(item.id);
+    document.getElementById("schedule-entry")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   const shareLink = typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}?class=${encodeURIComponent(className)}&term=${encodeURIComponent(term)}`;
   const shareQr = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=${encodeURIComponent(shareLink)}`;
   const copyShareLink = async () => { await navigator.clipboard?.writeText(shareLink); setCopied(true); window.setTimeout(() => setCopied(false), 1800); };
@@ -359,25 +855,254 @@ function Dashboard({ isPresident, assessments, onAdd, onDelete, onEdit, calendar
     return dateNumber(a) - dateNumber(b);
   }) }));
   const activeSubjectGroups = eventsBySubject.filter(({ items }) => items.length > 0);
-  return <main className="dashboard">
-    <aside className="side-nav"><a className="brand dash-brand" href="#top"><span>{(() => { const m = term.match(/(\d{4}).*?(\d)학기/); return m ? `${m[1].slice(2)}-${m[2]}` : term; })()}</span>{className}</a><p className="side-label">{term} · {isPresident ? "ADMIN CONSOLE" : "EDITOR CONSOLE"}</p><button className={tab === "calendar" ? "side-active" : ""} onClick={() => setTab("calendar")}>▦&nbsp; 수행평가 일정</button>{isPresident && <button className={tab === "members" ? "side-active" : ""} onClick={() => setTab("members")}>♙&nbsp; 입력 권한 관리</button>}<div className="side-bottom"><button onClick={onBack}>← 학생용 공지 보기</button><button onClick={onLogout}>로그아웃</button></div></aside>
-    <section className="dash-main" id="top"><header className="dash-header"><div><p className="eyebrow dark">CLASS MANAGEMENT</p><h1>{tab === "members" && isPresident ? "입력 권한 관리" : "수행평가 대시보드"}</h1></div><span className="admin-badge">{isPresident ? "회장 관리자" : "일정 입력 권한"}</span></header>
-      {tab === "calendar" || !isPresident ? <>
-        {isPresident && <div className="choice-panels">
-          <section><b>학기 선택</b><button className="plus-create" onClick={() => setAddingTerm(!addingTerm)}>＋</button>
-            {addingTerm && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextTerm = newTerm.trim(); if (nextTerm && !terms.includes(nextTerm)) addTerm(nextTerm); setNewTerm(""); setAddingTerm(false); }}><input autoFocus value={newTerm} onChange={(event) => setNewTerm(event.target.value)} placeholder="새 학기명"/><button>추가</button></form>}
-            <div>{terms.map((item) => <span className="choice-item" key={item}><button className={term === item ? "chosen" : ""} onClick={() => chooseTerm(item)}>{item}</button><button className="choice-delete" onClick={() => { if (terms.length !== 1 && window.confirm(`'${item}' 학기를 삭제할까요?`)) removeTerm(item); }}>×</button></span>)}</div>
+
+  return (
+    <main className="dashboard">
+      <aside className="side-nav">
+        <a className="brand dash-brand" href="#top">
+          <span>{(() => { const m = term.match(/(\d{4}).*?(\d)학기/); return m ? `${m[1].slice(2)}-${m[2]}` : term; })()}</span>{className}
+        </a>
+        <p className="side-label">{term} · {isPresident ? "ADMIN CONSOLE" : "EDITOR CONSOLE"}</p>
+        <button className={tab === "calendar" ? "side-active" : ""} onClick={() => setTab("calendar")}>
+          ▦&nbsp; 수행평가 일정
+        </button>
+        {isPresident && (
+          <button className={tab === "members" ? "side-active" : ""} onClick={() => setTab("members")}>
+            ♙&nbsp; 입력 권한 관리
+          </button>
+        )}
+        <div className="side-bottom">
+          <button onClick={onBack}>← 학생용 공지 보기</button>
+          <button onClick={onLogout}>로그아웃</button>
+        </div>
+      </aside>
+
+      <section className="dash-main" id="top">
+        <header className="dash-header">
+          <div>
+            <p className="eyebrow dark">CLASS MANAGEMENT</p>
+            <h1>{tab === "members" && isPresident ? "입력 권한 관리" : "수행평가 대시보드"}</h1>
+          </div>
+          <span className="admin-badge">{isPresident ? "회장 관리자" : "일정 입력 권한"}</span>
+        </header>
+
+        {tab === "calendar" || !isPresident ? (
+          <>
+            {isPresident && (
+              <div className="choice-panels">
+                <section>
+                  <b>학기 선택</b>
+                  <button className="plus-create" onClick={() => setAddingTerm(!addingTerm)}>＋</button>
+                  {addingTerm && (
+                    <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextTerm = newTerm.trim(); if (nextTerm && !terms.includes(nextTerm)) addTerm(nextTerm); setNewTerm(""); setAddingTerm(false); }}>
+                      <input autoFocus value={newTerm} onChange={(event) => setNewTerm(event.target.value)} placeholder="새 학기명" />
+                      <button>추가</button>
+                    </form>
+                  )}
+                  <div>
+                    {terms.map((item) => (
+                      <span className="choice-item" key={item}>
+                        <button className={term === item ? "chosen" : ""} onClick={() => chooseTerm(item)}>{item}</button>
+                        <button className="choice-delete" onClick={() => { if (terms.length !== 1 && window.confirm(`'${item}' 학기를 삭제할까요?`)) removeTerm(item); }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <b>학급 선택</b>
+                  <button className="plus-create" onClick={() => setAddingClass(!addingClass)}>＋</button>
+                  {addingClass && (
+                    <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextClass = newClass.trim(); if (nextClass && !termClasses.includes(nextClass)) addClass(nextClass); setNewClass(""); setAddingClass(false); }}>
+                      <input autoFocus value={newClass} onChange={(event) => setNewClass(event.target.value)} placeholder="새 학급명" />
+                      <button>추가</button>
+                    </form>
+                  )}
+                  <div>
+                    {termClasses.map((item) => (
+                      <span className="choice-item" key={item}>
+                        <button className={className === item ? "chosen" : ""} onClick={() => chooseClass(item)}>{item}</button>
+                        <button className="choice-delete" onClick={() => { if (window.confirm(`'${item}' 학급을 삭제할까요?`)) removeClass(item); }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            <section className="share-panel">
+              <p className="eyebrow dark">SCHEDULE SHARE</p>
+              <h2>일정 공유</h2>
+              <p>학생용 공유 페이지: <code>{shareLink}</code></p>
+              <button className={`copy-link ${copied ? "copied" : ""}`} onClick={copyShareLink}>
+                {copied ? "복사됨 ✓" : "링크 복사"}
+              </button>
+              <img className="share-qr" src={shareQr} alt={`${term} ${className} 학생용 공유 페이지 QR 코드`} />
+            </section>
+
+            <section className="all-events-panel">
+              <div className="all-events-heading">
+                <div>
+                  <p className="eyebrow dark">ALL SCHEDULES</p>
+                  <h2>{term} · {className} 전체 일정</h2>
+                </div>
+                <span>{assessments.length}건</span>
+              </div>
+              {activeSubjectGroups.length ? (
+                <div className={`subject-event-groups count-${activeSubjectGroups.length}`} style={{ gridTemplateColumns: `repeat(${activeSubjectGroups.length}, minmax(0, 1fr))` }}>
+                  {activeSubjectGroups.map(({ subject, color, items }) => (
+                    <section className={`subject-event-group ${color}`} key={subject}>
+                      <h3>{subject}</h3>
+                      {items.map((item) => (
+                        <div className="event-list-row" key={item.id}>
+                          <span>{item.date} · {item.title} ({item.period})</span>
+                        </div>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty-schedule">선택한 학기와 학급에 등록된 일정이 없어요.</p>
+              )}
+            </section>
+
+            <FixedCalendar assessments={assessments} view={calendarView} setView={setCalendarView} date={dashboardDate} setDate={setDashboardDate} onDelete={onDelete} onEdit={startEditing} />
+
+            <section className={`entry-panel ${editingId ? "editing" : ""}`} id="schedule-entry">
+              <div>
+                <p className="eyebrow dark">SCHEDULE INPUT</p>
+                <h2>{editingId ? "일정 수정" : "일정 입력"}</h2>
+              </div>
+              <form className="entry-form" onSubmit={addEntry}>
+                <input placeholder="과목" value={entry.subject} onChange={(e) => setEntry({ ...entry, subject: e.target.value })} required />
+                <input placeholder="제목" value={entry.title} onChange={(e) => setEntry({ ...entry, title: e.target.value })} required />
+                <label>
+                  시작일
+                  <input type="date" value={entry.date} onChange={(e) => setEntry({ ...entry, date: e.target.value })} required />
+                </label>
+                <label>
+                  종료일 (기간 선택)
+                  <input type="date" value={entry.endDate} min={entry.date} onChange={(e) => setEntry({ ...entry, endDate: e.target.value })} />
+                </label>
+                <label>
+                  교시
+                  <select value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })} required>
+                    <option value="">선택</option>
+                    {["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시", "제출"].map((item) => (
+                      <option key={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+                <input placeholder="설명" value={entry.kind} onChange={(e) => setEntry({ ...entry, kind: e.target.value })} />
+                <input placeholder="준비물 (선택)" value={entry.supplies} onChange={(e) => setEntry({ ...entry, supplies: e.target.value })} />
+                <input placeholder="양식 링크 (선택)" value={entry.templateLink} onChange={(e) => setEntry({ ...entry, templateLink: e.target.value })} />
+
+                <div className="entry-attachment-manager">
+                  <label className="attachment-input-label">
+                    <span>첨부 파일 (복수 선택 가능, 파일당 최대 15MB)</span>
+                    <input
+                      type="file"
+                      multiple
+                      onChange={handleFileChange}
+                      disabled={isUploading}
+                    />
+                  </label>
+
+                  {existingFiles.length > 0 && (
+                    <div className="attachment-preview-box">
+                      <span className="box-title">기존 첨부파일 ({existingFiles.length})</span>
+                      <div className="attachment-chip-list">
+                        {existingFiles.map((file) => (
+                          <span className="attachment-chip existing" key={file.path || file.url}>
+                            <span className="chip-name" title={file.name}>{file.name}</span>
+                            {file.size ? <small>({formatFileSize(file.size)})</small> : null}
+                            <button
+                              type="button"
+                              className="chip-remove"
+                              onClick={() => removeExistingFile(file)}
+                              title="첨부파일 삭제"
+                              aria-label="첨부파일 삭제"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {newFiles.length > 0 && (
+                    <div className="attachment-preview-box">
+                      <span className="box-title">새로 추가할 파일 ({newFiles.length})</span>
+                      <div className="attachment-chip-list">
+                        {newFiles.map((file, idx) => (
+                          <span className="attachment-chip new" key={`${file.name}-${idx}`}>
+                            <span className="chip-name" title={file.name}>{file.name}</span>
+                            <small>({formatFileSize(file.size)})</small>
+                            <button
+                              type="button"
+                              className="chip-remove"
+                              onClick={() => removeNewFile(idx)}
+                              title="추가 취소"
+                              aria-label="추가 취소"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {uploadError && <p className="upload-error">{uploadError}</p>}
+
+                <div className="entry-actions">
+                  <button disabled={isUploading}>
+                    {isUploading ? "업로드 및 저장 중…" : editingId ? "일정 수정" : "일정 추가"}
+                  </button>
+                  {editingId && (
+                    <button type="button" className="cancel-edit" onClick={resetEntry}>
+                      취소
+                    </button>
+                  )}
+                </div>
+              </form>
+            </section>
+            <p className="dash-tip">학생들은 공지 화면에서 일정만 확인하며, 편집 권한이 있는 계정만 이 대시보드에서 입력할 수 있습니다.</p>
+          </>
+        ) : (
+          <section className="permission-layout">
+            <div className="permission-intro">
+              <p className="eyebrow dark">EDITOR ACCESS</p>
+              <h2>누가 일정을 입력할 수 있나요?</h2>
+              <p>회장은 필요한 학생에게만 아이디와 비밀번호를 만들어 주고, 해당 학급의 일정 입력 권한을 나눌 수 있어요.</p>
+              <form onSubmit={inviteEditor} className="invite-form">
+                <input placeholder="학생 이름" value={invite.name} onChange={(e) => setInvite({ ...invite, name: e.target.value })} />
+                <input placeholder="아이디" value={invite.username} onChange={(e) => setInvite({ ...invite, username: e.target.value })} />
+                <input placeholder="임시 비밀번호(최소 6자리 이상 숫자)" value={invite.password} onChange={(e) => setInvite({ ...invite, password: e.target.value })} />
+                <button>입력 권한 부여</button>
+              </form>
+            </div>
+            <div className="member-list">
+              <div className="member-row owner">
+                <span>회장 관리자</span>
+                <strong>admin</strong>
+                <em>전체 학급 관리</em>
+              </div>
+              {editors.map((editor) => (
+                <div className="member-row" key={editor.id}>
+                  <span>{editor.name}</span>
+                  <strong>{editor.username}</strong>
+                  <em>{editor.className} 입력 가능</em>
+                  <button onClick={() => { if (window.confirm(`'${editor.name}' 학생의 입력 권한과 로그인 계정을 영구 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) onRevokeEditor(editor.uid); }}>
+                    권한 삭제
+                  </button>
+                </div>
+              ))}
+            </div>
           </section>
-          <section><b>학급 선택</b><button className="plus-create" onClick={() => setAddingClass(!addingClass)}>＋</button>
-            {addingClass && <form className="inline-add" onSubmit={(event) => { event.preventDefault(); const nextClass = newClass.trim(); if (nextClass && !termClasses.includes(nextClass)) addClass(nextClass); setNewClass(""); setAddingClass(false); }}><input autoFocus value={newClass} onChange={(event) => setNewClass(event.target.value)} placeholder="새 학급명"/><button>추가</button></form>}
-            <div>{termClasses.map((item) => <span className="choice-item" key={item}><button className={className === item ? "chosen" : ""} onClick={() => chooseClass(item)}>{item}</button><button className="choice-delete" onClick={() => { if (window.confirm(`'${item}' 학급을 삭제할까요?`)) removeClass(item); }}>×</button></span>)}</div>
-          </section>
-        </div>}
-        <section className="share-panel"><p className="eyebrow dark">SCHEDULE SHARE</p><h2>일정 공유</h2><p>학생용 공유 페이지: <code>{shareLink}</code></p><button className={`copy-link ${copied ? "copied" : ""}`} onClick={copyShareLink}>{copied ? "복사됨 ✓" : "링크 복사"}</button><img className="share-qr" src={shareQr} alt={`${term} ${className} 학생용 공유 페이지 QR 코드`} /></section>
-        <section className="all-events-panel"><div className="all-events-heading"><div><p className="eyebrow dark">ALL SCHEDULES</p><h2>{term} · {className} 전체 일정</h2></div><span>{assessments.length}건</span></div>{activeSubjectGroups.length ? <div className={`subject-event-groups count-${activeSubjectGroups.length}`} style={{ gridTemplateColumns: `repeat(${activeSubjectGroups.length}, minmax(0, 1fr))` }}>{activeSubjectGroups.map(({ subject, color, items }) => <section className={`subject-event-group ${color}`} key={subject}><h3>{subject}</h3>{items.map((item) => <div className="event-list-row" key={item.id}><span>{item.date} · {item.title} ({item.period})</span></div>)}</section>)}</div> : <p className="empty-schedule">선택한 학기와 학급에 등록된 일정이 없어요.</p>}</section>
-        <FixedCalendar assessments={assessments} view={calendarView} setView={setCalendarView} date={dashboardDate} setDate={setDashboardDate} onDelete={onDelete} onEdit={startEditing} />
-        <section className={`entry-panel ${editingId ? "editing" : ""}`} id="schedule-entry"><div><p className="eyebrow dark">SCHEDULE INPUT</p><h2>{editingId ? "일정 수정" : "일정 입력"}</h2></div><form className="entry-form" onSubmit={addEntry}><input placeholder="과목" value={entry.subject} onChange={(e) => setEntry({ ...entry, subject: e.target.value })}/><input placeholder="제목" value={entry.title} onChange={(e) => setEntry({ ...entry, title: e.target.value })}/><label>시작일<input type="date" value={entry.date} onChange={(e) => setEntry({ ...entry, date: e.target.value })}/></label><label>종료일 (기간 선택)<input type="date" value={entry.endDate} min={entry.date} onChange={(e) => setEntry({ ...entry, endDate: e.target.value })}/></label><label>교시<select value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })}><option value="">선택</option>{["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시", "제출"].map((item) => <option key={item}>{item}</option>)}</select></label><input placeholder="설명" value={entry.kind} onChange={(e) => setEntry({ ...entry, kind: e.target.value })}/><input placeholder="양식 링크 (선택)" value={entry.templateLink} onChange={(e) => setEntry({ ...entry, templateLink: e.target.value })}/><label className="attachment-input">첨부 파일 (선택)<input type="file" onChange={(e) => { setAttachment(e.target.files?.[0] ?? null); setUploadError(""); }} />{attachment && <small>{attachment.name}</small>}</label>{uploadError && <p className="upload-error">{uploadError}</p>}<div className="entry-actions"><button disabled={isUploading}>{isUploading ? "업로드 중…" : editingId ? "일정 수정" : "일정 추가"}</button>{editingId && <button type="button" className="cancel-edit" onClick={resetEntry}>취소</button>}</div></form></section>
-        <p className="dash-tip">학생들은 공지 화면에서 일정만 확인하며, 편집 권한이 있는 계정만 이 대시보드에서 입력할 수 있습니다.</p>
-      </> : <section className="permission-layout"><div className="permission-intro"><p className="eyebrow dark">EDITOR ACCESS</p><h2>누가 일정을 입력할 수 있나요?</h2><p>회장은 필요한 학생에게만 아이디와 비밀번호를 만들어 주고, 해당 학급의 일정 입력 권한을 나눌 수 있어요.</p><form onSubmit={inviteEditor} className="invite-form"><input placeholder="학생 이름" value={invite.name} onChange={(e) => setInvite({ ...invite, name: e.target.value })} /><input placeholder="아이디" value={invite.username} onChange={(e) => setInvite({ ...invite, username: e.target.value })} /><input placeholder="임시 비밀번호(최소 6자리 이상 숫자)" value={invite.password} onChange={(e) => setInvite({ ...invite, password: e.target.value })} /><button>입력 권한 부여</button></form></div><div className="member-list"><div className="member-row owner"><span>회장 관리자</span><strong>admin</strong><em>전체 학급 관리</em></div>{editors.map((editor) => <div className="member-row" key={editor.id}><span>{editor.name}</span><strong>{editor.username}</strong><em>{editor.className} 입력 가능</em><button onClick={() => { if (window.confirm(`'${editor.name}' 학생의 입력 권한과 로그인 계정을 영구 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) onRevokeEditor(editor.uid); }}>권한 삭제</button></div>)}</div></section>}
-    </section></main>;
+        )}
+      </section>
+    </main>
+  );
 }

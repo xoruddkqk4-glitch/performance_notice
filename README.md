@@ -131,6 +131,22 @@ gh-pages-src/        GitHub Pages용 Vite 진입점
   - 브라우저 탭 타이틀 및 설명의 학급명 하드코딩 제거 및 `수행평가 일정`으로 단일화 (`app/layout.tsx`)
 - **검증 결과**:
   - `pnpm run build:pages` GitHub Pages 정적 배포 빌드 정상 통과 (`built in 1.18s`)
-  - 로컬 개발 서버 및 브라우저 정상 렌더링 검증 완료
+## [2026-10-16 09:02] 업데이트 이력 (Commit ID: 60a2b3b)
+- **수정 내용**:
+  - 관리자 일정 등록/수정 시 다중 첨부파일 업로드(`multiple`) 및 대기 파일 취소 기능 구현 (`app/page.tsx`, `app/globals.css`)
+  - 기존 등록된 첨부파일 목록 확인 및 개별 파일 삭제 기능 구현 (Firebase Storage 객체 연동 삭제)
+  - 첨부파일 용량 제한 및 안전 정책 적용: 파일당 최대 15MB, 일정당 총합 50MB 사전 검사 및 안내 문구 출력
+  - Firebase Storage 보안 규칙에 15MB 용량 제한 조건 추가 (`firebase/storage.rules`)
+  - 학생용 화면 편의 기능 강화:
+    - 이미지 파일: 상세 모달 내 썸네일 표시 및 클릭 시 확대 라이트박스 뷰어 지원
+    - PDF 파일: PDF 전용 배지 표시 및 다운로드 없이 즉시 읽을 수 있는 [미리보기 ↗] 새 탭 뷰어 지원
+    - 과목 카드: 첨부파일 복수 등록 시 `첨부 N건 ↧` 버튼 연동
+  - 기존 단일 첨부파일 일정 데이터에 대한 100% 하위 호환성 정규화 함수(`getAssessmentAttachments`) 적용
+  - 일정 자체 삭제 시 연결된 모든 Storage 파일 자동 정리 연동
+  - 계획서 즉시 적용 스킬(`apply`) 도입 (`.agents/skills/apply/`)
+- **검증 결과**:
+  - `pnpm exec tsc --noEmit` 정적 타입 검사 결과 `app/page.tsx` 오류 0건 통과
+  - `node -c functions/index.js` 구문 검사 정상 통과
+
 
 
